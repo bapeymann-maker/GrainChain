@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ufer Farms Grain Kiosk</title>
+  <link rel="manifest" href="/manifest.json" />
+  <style>
+    html, body { margin: 0; padding: 0; background: #171B1E; height: 100%; }
+    #sync-status {
+      position: fixed; top: 8px; right: 12px; z-index: 999;
+      font: 12px Inter, system-ui, sans-serif; color: #9AA2A8;
+      background: #1F2529; border: 1px solid #343B40; border-radius: 999px;
+      padding: 4px 12px;
+    }
+    #sync-status.pending { color: #E2812B; }
+    #sync-status.error { color: #C0453A; }
+    #sync-status.synced { color: #5C8A3A; }
+  </style>
+</head>
+<body>
+  <div id="sync-status">Starting…</div>
+  <div id="app"></div>
+
+  <script type="module">
+    import { initSync } from "/src/sync.js";
+    import { pendingCount } from "/src/db.js";
+    import { mountApp } from "/src/app.js";
+
+    const statusEl = document.getElementById("sync-status");
+
+    function renderStatus(status) {
+      if (status === "offline") {
+        statusEl.textContent = "Offline — loads are queued locally";
+        statusEl.className = "pending";
+        return;
+      }
+      if (status === "syncing") {
+        statusEl.textContent = "Syncing…";
+        statusEl.className = "";
+        return;
+      }
+      if (status?.state === "synced") {
+        statusEl.textContent =
+          status.pending > 0
+            ? `Synced (${status.pending} still queued)`
+            : "All loads synced";
+        statusEl.className = status.pending > 0 ? "pending" : "synced";
+        return;
+      }
+      if (status?.state === "partial") {
+        statusEl.textContent = `${status.failed} load(s) failed to sync — retrying`;
+        statusEl.className = "error";
+        return;
+      }
+      if (status?.state === "error") {
+        statusEl.textContent = "Sync error — retrying";
+        statusEl.className = "error";
+      }
+    }
+
+    // TODO: replace with the real project URL/anon key once provisioned.
+    initSync({
+      supabaseUrl: "https://YOUR-PROJECT.supabase.co",
+      supabaseAnonKey: "YOUR-ANON-KEY",
+      onStatusChange: renderStatus,
+    });
+
+    pendingCount().then((n) => {
+      if (n > 0) renderStatus({ state: "synced", pending: n });
+    });
+
+    mountApp(document.getElementById("app"));
+
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("/sw.js").catch(console.error);
+      });
+    }
+  </script>
+</body>
+</html>
