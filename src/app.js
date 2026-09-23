@@ -536,9 +536,9 @@ function binScreen() {
   wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-top:-4px;` }, "Bins that can't take this load are grayed out and explain why."));
 
   // Field delivery is specifically the home-site pit → wet bin flow, so
-  // only home-site storage bins belong here — not Danube/Fairfax/other
+  // only home-site storage/wet bins belong here — not Danube/Fairfax/other
   // satellite sites, and not loadout or not-yet-built bins.
-  const homeBins = state.bins.filter((b) => b.site === "HOME" && b.bin_type === "storage" && b.active !== false);
+  const homeBins = state.bins.filter((b) => b.site === "HOME" && (b.bin_type === "storage" || b.bin_type === "wet") && b.active !== false);
 
   if (homeBins.length === 0) {
     wrap.appendChild(
@@ -552,12 +552,16 @@ function binScreen() {
     const effectiveStatus = state.isBuffer ? "conventional" : state.field.status;
     const list = h("div", { style: "display:flex;flex-direction:column;gap:10px;" });
     homeBins.forEach((b) => {
+      // Wet/staging bins (A, B, H-10) are transient — grain passes through
+      // to the dryer or on to another bin, so they take any status.
+      const isWetStaging = b.bin_type === "wet";
       const compatible =
-        effectiveStatus === "organic"
+        isWetStaging ||
+        (effectiveStatus === "organic"
           ? b.status === "organic" && b.affidavit
           : effectiveStatus === "transitional"
           ? b.status === "transitional" || b.status === "conventional"
-          : b.status !== "organic";
+          : b.status !== "organic");
       const reason =
         effectiveStatus === "organic" && b.status === "organic" && !b.affidavit
           ? "Needs a clean bin affidavit before organic use"
@@ -584,7 +588,15 @@ function binScreen() {
               h("div", { style: "font-size:16px;font-weight:600;" }, b.name),
               h("div", { style: `font-size:13px;color:${compatible ? COLORS.textMuted : COLORS.danger};` }, compatible ? `${b.pct}% full` : reason),
             ]),
-            compatible ? badge(b.status) : null,
+            isWetStaging
+              ? h(
+                  "span",
+                  { style: `${BODY}font-size:12px;font-weight:700;color:${COLORS.amber};background:${COLORS.amberDark};padding:4px 10px;border-radius:999px;white-space:nowrap;` },
+                  "Wet / staging"
+                )
+              : compatible
+              ? badge(b.status)
+              : null,
           ]
         )
       );
