@@ -101,6 +101,9 @@ async function pullReferenceData() {
     try {
       const rows = await supabaseRequest(`/rest/v1/${table}?select=*`);
       await cacheReference(table, rows);
+      // Lets the running UI (app.js) pick up fresh reference data — e.g. a
+      // clean-bin affidavit logged elsewhere — without a manual reload.
+      window.dispatchEvent(new CustomEvent("grainchain:reference-updated"));
     } catch (err) {
       // Offline or table not reachable — keep serving the last cached copy.
       console.warn(`Could not refresh reference table "${table}"`, err);
