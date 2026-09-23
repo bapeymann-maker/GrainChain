@@ -84,6 +84,7 @@ function toLoadRow(load) {
     logged_at: load.queuedAt,
     worker_id: load.workerId,
     field_id: load.fieldId,
+    crop: load.crop ?? null,
     truck: load.truck,
     truck_mode: load.truckMode, // "full" | "notFull" | "buffer"
     bushels: load.bushels ?? null,

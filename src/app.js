@@ -25,6 +25,7 @@ const WORKERS = [
 // "full truck, no weight entry" shortcut with real data.
 const TRUCKS = ["1", "2", "3", "4", "5", "6"];
 const TRUCK_BUSHELS = { "1": 950, "2": 980, "3": 1000, "4": 940, "5": 970, "6": 990 };
+const CROPS = ["Corn", "Soybeans", "Oats"];
 
 const COLORS = {
   ink: "#171B1E",
@@ -129,6 +130,7 @@ const state = {
   fields: [],
   bins: [],
   statusFilter: "All",
+  cropChoice: null,
 
   field: null,
   bin: null,
@@ -184,8 +186,9 @@ function logAnotherLoad() {
 function changeFieldAndBin() {
   state.field = null;
   state.bin = null;
+  state.cropChoice = null;
   clearTruckFields();
-  setState({ screen: "field" });
+  setState({ screen: "crop" });
 }
 
 function logOut() {
@@ -277,7 +280,7 @@ function homeScreen() {
     bigButton("Field delivery", {
       tone: "gold",
       sub: state.field && state.bin ? "Skip straight to truck and load" : "Pit → wet bin, at the home site",
-      onClick: () => setState({ screen: state.field && state.bin ? "truck" : "field" }),
+      onClick: () => setState({ screen: state.field && state.bin ? "truck" : "crop" }),
     })
   );
   wrap.appendChild(bigButton("Elevator delivery (Danube / Fairfax)", { disabled: true, sub: "Coming in a later phase" }));
@@ -292,12 +295,40 @@ function homeScreen() {
   return wrap;
 }
 
+function cropScreen() {
+  const wrap = h("div", { style: "display:flex;flex-direction:column;gap:14px;" });
+  wrap.appendChild(h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.text};` }, "Which crop?"));
+  wrap.appendChild(
+    h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-top:-8px;` }, "This narrows the field list to just that crop.")
+  );
+  CROPS.forEach((crop) => {
+    wrap.appendChild(
+      bigButton(crop, {
+        tone: "gold",
+        onClick: () => {
+          state.cropChoice = crop;
+          setState({ screen: "field" });
+        },
+      })
+    );
+  });
+  wrap.appendChild(linkButton("← Back", () => setState({ screen: "home" })));
+  return wrap;
+}
+
 function fieldScreen() {
   const wrap = h("div", { style: "display:flex;flex-direction:column;gap:14px;" });
-  wrap.appendChild(h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.text};` }, "Which field?"));
+  wrap.appendChild(
+    h("div", { style: "display:flex;align-items:center;gap:10px;" }, [
+      h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.text};` }, "Which field?"),
+      h("span", { style: `${BODY}font-size:12px;font-weight:700;color:${COLORS.gold};background:${COLORS.goldDark};padding:4px 10px;border-radius:999px;` }, state.cropChoice),
+    ])
+  );
   wrap.appendChild(
     h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-top:-8px;` }, "Organic status is pulled from your field records — no need to enter it.")
   );
+
+  const cropFields = state.fields.filter((f) => f.crop === state.cropChoice);
 
   if (state.fields.length === 0) {
     wrap.appendChild(
@@ -305,6 +336,14 @@ function fieldScreen() {
         "div",
         { style: `border:1px dashed ${COLORS.border};border-radius:10px;padding:20px;color:${COLORS.textMuted};font-size:13px;text-align:center;` },
         "No fields synced yet. Make sure this Chromebook has connected to the internet at least once since setup."
+      )
+    );
+  } else if (cropFields.length === 0) {
+    wrap.appendChild(
+      h(
+        "div",
+        { style: `border:1px dashed ${COLORS.border};border-radius:10px;padding:20px;color:${COLORS.textMuted};font-size:13px;text-align:center;` },
+        `No fields are marked as ${state.cropChoice} yet — crop isn't populated on field records yet, ask the office to confirm.`
       )
     );
   } else {
@@ -330,7 +369,7 @@ function fieldScreen() {
     wrap.appendChild(tabs);
 
     const list = h("div", { style: "display:flex;flex-direction:column;gap:10px;max-height:420px;overflow-y:auto;padding-right:4px;" });
-    state.fields
+    cropFields
       .filter((f) => state.statusFilter === "All" || f.status === state.statusFilter)
       .forEach((f) => {
         list.appendChild(
@@ -356,7 +395,7 @@ function fieldScreen() {
     wrap.appendChild(list);
   }
 
-  wrap.appendChild(linkButton("← Back", () => setState({ screen: "home" })));
+  wrap.appendChild(linkButton("← Back", () => setState({ screen: "crop" })));
   return wrap;
 }
 
@@ -553,23 +592,29 @@ function binScreen() {
     const list = h("div", { style: "display:flex;flex-direction:column;gap:10px;" });
     homeBins.forEach((b) => {
       // Wet/staging bins (A, B, H-10) are transient — grain passes through
-      // to the dryer or on to another bin, so they take any status.
+      // to the dryer or on to another bin, so they take any status and any
+      // crop.
       const isWetStaging = b.bin_type === "wet";
-      const compatible =
+      const statusOk =
         isWetStaging ||
         (effectiveStatus === "organic"
           ? b.status === "organic" && b.affidavit
           : effectiveStatus === "transitional"
           ? b.status === "transitional" || b.status === "conventional"
           : b.status !== "organic");
-      const reason =
-        effectiveStatus === "organic" && b.status === "organic" && !b.affidavit
+      const cropOk = isWetStaging || !b.crop || b.crop === state.cropChoice;
+      const compatible = statusOk && cropOk;
+      const reason = !statusOk
+        ? effectiveStatus === "organic" && b.status === "organic" && !b.affidavit
           ? "Needs a clean bin affidavit before organic use"
           : effectiveStatus === "organic" && b.status !== "organic"
           ? "Not an organic bin"
           : effectiveStatus !== "organic" && b.status === "organic"
           ? "Reserved for organic grain"
-          : "";
+          : ""
+        : !cropOk
+        ? `Reserved for ${b.crop}`
+        : "";
       list.appendChild(
         h(
           "button",
@@ -615,6 +660,7 @@ function confirmScreen() {
 
   const rows = [
     ["Worker", worker.name],
+    ["Crop", state.cropChoice],
     ["Field", field.name],
     ["Acres", field.acres ? `${field.acres}` : "On file"],
     ["Status", null],
@@ -678,10 +724,11 @@ function successScreen() {
 }
 
 async function submitLoad() {
-  const { worker, field, bin, truck, truckMode, weight, moisture, testWeight, isBuffer } = state;
+  const { worker, field, bin, truck, truckMode, weight, moisture, testWeight, isBuffer, cropChoice } = state;
   await queueLoad({
     workerId: worker.id,
     fieldId: field.id,
+    crop: cropChoice,
     truck: truckMode === "buffer" ? null : truck,
     truckMode,
     bushels: truckMode === "full" ? TRUCK_BUSHELS[truck] : null,
@@ -732,8 +779,8 @@ function topBar() {
 }
 
 function stepDots() {
-  const stepIndex = { login: 0, home: 0, field: 1, truck: 2, bin: 3, confirm: 4, success: 4 }[state.screen];
-  const total = 5;
+  const stepIndex = { login: 0, home: 0, crop: 1, field: 2, truck: 3, bin: 4, confirm: 5, success: 5 }[state.screen];
+  const total = 6;
   const row = h("div", { style: "display:flex;gap:8px;padding:18px 28px 0;" });
   for (let i = 0; i < total; i++) {
     row.appendChild(h("div", { style: `height:4px;flex:1;border-radius:2px;background:${i <= stepIndex ? COLORS.gold : COLORS.border};` }));
@@ -779,6 +826,7 @@ function render() {
   const screens = {
     login: loginScreen,
     home: homeScreen,
+    crop: cropScreen,
     field: fieldScreen,
     truck: truckScreen,
     bin: binScreen,
