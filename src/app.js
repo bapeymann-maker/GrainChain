@@ -535,18 +535,23 @@ function binScreen() {
   wrap.appendChild(bufferLabel);
   wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-top:-4px;` }, "Bins that can't take this load are grayed out and explain why."));
 
-  if (state.bins.length === 0) {
+  // Field delivery is specifically the home-site pit → wet bin flow, so
+  // only home-site storage bins belong here — not Danube/Fairfax/other
+  // satellite sites, and not loadout or not-yet-built bins.
+  const homeBins = state.bins.filter((b) => b.site === "HOME" && b.bin_type === "storage" && b.active !== false);
+
+  if (homeBins.length === 0) {
     wrap.appendChild(
       h(
         "div",
         { style: `border:1px dashed ${COLORS.border};border-radius:10px;padding:20px;color:${COLORS.textMuted};font-size:13px;text-align:center;` },
-        "No bins synced yet. Make sure this Chromebook has connected to the internet at least once since setup."
+        "No home-site bins synced yet. Make sure this Chromebook has connected to the internet at least once since setup."
       )
     );
   } else {
     const effectiveStatus = state.isBuffer ? "conventional" : state.field.status;
     const list = h("div", { style: "display:flex;flex-direction:column;gap:10px;" });
-    state.bins.forEach((b) => {
+    homeBins.forEach((b) => {
       const compatible =
         effectiveStatus === "organic"
           ? b.status === "organic" && b.affidavit
