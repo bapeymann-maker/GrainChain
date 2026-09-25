@@ -146,6 +146,7 @@ const state = {
 };
 
 let root = null;
+let lastScreen = null;
 
 function setState(patch) {
   Object.assign(state, patch);
@@ -360,6 +361,7 @@ function fieldScreen() {
             "button",
             {
               style: `${BODY}display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-radius:10px;border:1px solid ${selected ? COLORS.gold : COLORS.border};background:${selected ? COLORS.goldDark : COLORS.panelAlt};color:${selected ? COLORS.gold : COLORS.text};cursor:pointer;text-align:left;`,
+              "data-selected": selected ? "true" : null,
               onclick: () => {
                 state.field = f;
                 setState({ screen: "truck" });
@@ -605,6 +607,7 @@ function binScreen() {
           {
             style: `${BODY}display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-radius:10px;border:1px solid ${!compatible ? COLORS.dangerDark : selected ? COLORS.gold : COLORS.border};background:${!compatible ? COLORS.dangerDark : selected ? COLORS.goldDark : COLORS.panelAlt};color:${!compatible ? COLORS.danger : selected ? COLORS.gold : COLORS.text};cursor:${compatible ? "pointer" : "not-allowed"};opacity:${compatible ? 1 : 0.75};text-align:left;`,
             disabled: !compatible,
+            "data-selected": selected ? "true" : null,
             onclick: compatible
               ? () => {
                   state.bin = b;
@@ -786,12 +789,17 @@ function logPanel() {
     const worker = WORKERS.find((w) => w.id === entry.workerId);
     const field = state.fields.find((f) => f.id === entry.fieldId);
     const bin = state.bins.find((b) => b.id === entry.binId);
+    const truckLabel = entry.truck ? `Truck ${entry.truck}` : "Buffer truck";
     rows.appendChild(
       h("div", { style: `font-size:12px;color:${COLORS.textMuted};display:flex;gap:8px;` }, [
         h("span", { style: `color:${COLORS.text};` }, time),
         h("span", {}, worker ? worker.name : entry.workerId),
         h("span", {}, "·"),
-        h("span", {}, `${field ? field.name : entry.fieldId} → ${bin ? bin.name : entry.binId}`),
+        h("span", {}, field ? field.name : entry.fieldId),
+        h("span", {}, "·"),
+        h("span", {}, truckLabel),
+        h("span", {}, "·"),
+        h("span", {}, bin ? bin.name : entry.binId),
         !entry.synced ? h("span", { style: `color:${COLORS.amber};` }, "pending") : null,
         entry.isBuffer ? h("span", { style: `color:${COLORS.amber};` }, "buffer") : null,
       ])
@@ -828,6 +836,15 @@ function render() {
   if (panel) frame.appendChild(panel);
 
   root.appendChild(frame);
+
+  // Scroll the pre-highlighted pick into view, but only on first arrival at
+  // this screen — not on every re-render (e.g. tapping a status filter
+  // shouldn't yank the scroll position back each time).
+  if (state.screen !== lastScreen && (state.screen === "field" || state.screen === "bin")) {
+    const selectedEl = root.querySelector('[data-selected="true"]');
+    if (selectedEl) selectedEl.scrollIntoView({ block: "center", behavior: "auto" });
+  }
+  lastScreen = state.screen;
 }
 
 // ---------------------------------------------------------------------
