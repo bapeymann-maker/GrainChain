@@ -131,6 +131,7 @@ const state = {
   truck: null,
   truckMode: null, // "full" | "notFull" | "buffer"
   weight: "",
+  weightUnit: "lb", // "lb" | "bu" — only relevant for notFull/buffer
   weightError: "",
   moisture: "",
   testWeight: "",
@@ -166,6 +167,7 @@ function clearTruckFields() {
     truck: null,
     truckMode: null,
     weight: "",
+    weightUnit: "lb",
     weightError: "",
     moisture: "",
     testWeight: "",
@@ -472,11 +474,31 @@ function truckScreen() {
   );
 
   if (state.truckMode === "buffer" || state.truckMode === "notFull") {
-    wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-top:4px;margin-bottom:-4px;` }, "Weight (lb), as read to you by the cart driver"));
+    wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-top:4px;margin-bottom:-4px;` }, "Enter as weight or bushels — whichever the cart driver gave you"));
+    wrap.appendChild(
+      h("div", { style: "display:flex;gap:8px;" }, [
+        h(
+          "button",
+          {
+            style: `${BODY}flex:1;padding:10px;border-radius:8px;border:1px solid ${state.weightUnit === "lb" ? COLORS.gold : COLORS.border};background:${state.weightUnit === "lb" ? COLORS.goldDark : COLORS.panelAlt};color:${state.weightUnit === "lb" ? COLORS.gold : COLORS.text};font-size:14px;font-weight:600;cursor:pointer;`,
+            onclick: () => setState({ weightUnit: "lb", weightError: "" }),
+          },
+          "Weight (lb)"
+        ),
+        h(
+          "button",
+          {
+            style: `${BODY}flex:1;padding:10px;border-radius:8px;border:1px solid ${state.weightUnit === "bu" ? COLORS.gold : COLORS.border};background:${state.weightUnit === "bu" ? COLORS.goldDark : COLORS.panelAlt};color:${state.weightUnit === "bu" ? COLORS.gold : COLORS.text};font-size:14px;font-weight:600;cursor:pointer;`,
+            onclick: () => setState({ weightUnit: "bu", weightError: "" }),
+          },
+          "Bushels"
+        ),
+      ])
+    );
     wrap.appendChild(
       h("input", {
         inputmode: "decimal",
-        placeholder: "e.g. 62,400",
+        placeholder: state.weightUnit === "bu" ? "e.g. 950" : "e.g. 62,400",
         value: state.weight,
         style: `${BODY}font-size:20px;padding:14px;border-radius:8px;border:1px solid ${COLORS.border};background:${COLORS.panel};color:${COLORS.text};`,
         oninput: (e) => {
@@ -531,7 +553,7 @@ function truckScreen() {
         if (needsWeight) {
           const w = parseFloat(state.weight);
           if (!state.weight || isNaN(w) || w <= 0) {
-            setState({ weightError: "Enter the weight the cart driver read off the scale." });
+            setState({ weightError: "Enter the weight or bushels the cart driver gave you." });
             return;
           }
         }
@@ -659,7 +681,7 @@ function binScreen() {
 }
 
 function confirmScreen() {
-  const { field, bin, worker, truck, truckMode, weight, moisture, testWeight, isBuffer } = state;
+  const { field, bin, worker, truck, truckMode, weight, weightUnit, moisture, testWeight, isBuffer } = state;
   const wrap = h("div", { style: "display:flex;flex-direction:column;gap:16px;" });
   wrap.appendChild(h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.text};` }, "Confirm load"));
 
@@ -673,7 +695,7 @@ function confirmScreen() {
     [
       "Load",
       truckMode === "buffer" || truckMode === "notFull"
-        ? `${Number(weight).toLocaleString()} lb (estimated)`
+        ? `${Number(weight).toLocaleString()} ${weightUnit === "bu" ? "bu" : "lb"} (estimated)`
         : `${TRUCK_BUSHELS[truck].toLocaleString()} bu (pre-calculated, full)`,
     ],
     ...(moisture ? [["Moisture", `${moisture}%`]] : []),
@@ -729,15 +751,16 @@ function successScreen() {
 }
 
 async function submitLoad() {
-  const { worker, field, bin, truck, truckMode, weight, moisture, testWeight, isBuffer, cropChoice } = state;
+  const { worker, field, bin, truck, truckMode, weight, weightUnit, moisture, testWeight, isBuffer, cropChoice } = state;
+  const isPartial = truckMode === "buffer" || truckMode === "notFull";
   await queueLoad({
     workerId: worker.id,
     fieldId: field.id,
     crop: cropChoice,
     truck: truckMode === "buffer" ? null : truck,
     truckMode,
-    bushels: truckMode === "full" ? TRUCK_BUSHELS[truck] : null,
-    weightLb: truckMode === "buffer" || truckMode === "notFull" ? Number(weight) : null,
+    bushels: truckMode === "full" ? TRUCK_BUSHELS[truck] : isPartial && weightUnit === "bu" ? Number(weight) : null,
+    weightLb: isPartial && weightUnit === "lb" ? Number(weight) : null,
     moisturePct: moisture ? Number(moisture) : null,
     testWeight: testWeight ? Number(testWeight) : null,
     binId: bin.id,
