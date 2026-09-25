@@ -180,7 +180,7 @@ function clearTruckFields() {
 
 function logAnotherLoad() {
   clearTruckFields();
-  setState({ screen: state.field && state.bin ? "truck" : "home" });
+  setState({ screen: state.cropChoice ? "crop" : "home" });
 }
 
 function changeFieldAndBin() {
@@ -256,31 +256,11 @@ function homeScreen() {
   const wrap = h("div", { style: "display:flex;flex-direction:column;gap:14px;" });
   wrap.appendChild(h("div", { style: `${HEAD}font-size:24px;font-weight:700;color:${COLORS.text};` }, "What are you logging?"));
 
-  if (state.field && state.bin) {
-    wrap.appendChild(
-      h(
-        "div",
-        {
-          style: `display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border-radius:8px;border:1px solid ${COLORS.border};background:${COLORS.panel};`,
-        },
-        [
-          h("span", { style: `font-size:13px;color:${COLORS.textMuted};` }, [
-            "Staying on ",
-            h("span", { style: `color:${COLORS.text};` }, state.field.name),
-            " → ",
-            h("span", { style: `color:${COLORS.text};` }, state.bin.name),
-          ]),
-          linkButton("Change", changeFieldAndBin, COLORS.gold),
-        ]
-      )
-    );
-  }
-
   wrap.appendChild(
     bigButton("Field delivery", {
       tone: "gold",
-      sub: state.field && state.bin ? "Skip straight to truck and load" : "Pit → wet bin, at the home site",
-      onClick: () => setState({ screen: state.field && state.bin ? "truck" : "crop" }),
+      sub: "Pit → wet bin, at the home site",
+      onClick: () => setState({ screen: "crop" }),
     })
   );
   wrap.appendChild(bigButton("Elevator delivery (Danube / Fairfax)", { disabled: true, sub: "Coming in a later phase" }));
@@ -304,9 +284,11 @@ function cropScreen() {
   CROPS.forEach((crop) => {
     wrap.appendChild(
       bigButton(crop, {
-        tone: "gold",
+        tone: crop === state.cropChoice ? "gold" : "default",
+        sub: crop === state.cropChoice ? "Same as last load" : undefined,
         onClick: () => {
           state.cropChoice = crop;
+          state.statusFilter = "All"; // keep whatever field/crop was last used visible, not hidden by a leftover filter
           setState({ screen: "field" });
         },
       })
@@ -372,11 +354,12 @@ function fieldScreen() {
     cropFields
       .filter((f) => state.statusFilter === "All" || f.status === state.statusFilter)
       .forEach((f) => {
+        const selected = state.field && state.field.id === f.id;
         list.appendChild(
           h(
             "button",
             {
-              style: `${BODY}display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-radius:10px;border:1px solid ${COLORS.border};background:${COLORS.panelAlt};color:${COLORS.text};cursor:pointer;text-align:left;`,
+              style: `${BODY}display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-radius:10px;border:1px solid ${selected ? COLORS.gold : COLORS.border};background:${selected ? COLORS.goldDark : COLORS.panelAlt};color:${selected ? COLORS.gold : COLORS.text};cursor:pointer;text-align:left;`,
               onclick: () => {
                 state.field = f;
                 setState({ screen: "truck" });
@@ -385,7 +368,7 @@ function fieldScreen() {
             [
               h("div", {}, [
                 h("div", { style: "font-size:16px;font-weight:600;" }, f.name),
-                h("div", { style: `font-size:13px;color:${COLORS.textMuted};` }, f.acres ? `${f.acres} ac` : "Acreage on file"),
+                h("div", { style: `font-size:13px;color:${selected ? COLORS.gold : COLORS.textMuted};` }, selected ? "Same as last load" : f.acres ? `${f.acres} ac` : "Acreage on file"),
               ]),
               badge(f.status),
             ]
@@ -615,11 +598,12 @@ function binScreen() {
         : !cropOk
         ? `Reserved for ${b.crop}`
         : "";
+      const selected = compatible && state.bin && state.bin.id === b.id;
       list.appendChild(
         h(
           "button",
           {
-            style: `${BODY}display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-radius:10px;border:1px solid ${compatible ? COLORS.border : COLORS.dangerDark};background:${compatible ? COLORS.panelAlt : COLORS.dangerDark};color:${compatible ? COLORS.text : COLORS.danger};cursor:${compatible ? "pointer" : "not-allowed"};opacity:${compatible ? 1 : 0.75};text-align:left;`,
+            style: `${BODY}display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-radius:10px;border:1px solid ${!compatible ? COLORS.dangerDark : selected ? COLORS.gold : COLORS.border};background:${!compatible ? COLORS.dangerDark : selected ? COLORS.goldDark : COLORS.panelAlt};color:${!compatible ? COLORS.danger : selected ? COLORS.gold : COLORS.text};cursor:${compatible ? "pointer" : "not-allowed"};opacity:${compatible ? 1 : 0.75};text-align:left;`,
             disabled: !compatible,
             onclick: compatible
               ? () => {
@@ -631,7 +615,11 @@ function binScreen() {
           [
             h("div", {}, [
               h("div", { style: "font-size:16px;font-weight:600;" }, b.name),
-              h("div", { style: `font-size:13px;color:${compatible ? COLORS.textMuted : COLORS.danger};` }, compatible ? `${b.pct}% full` : reason),
+              h(
+                "div",
+                { style: `font-size:13px;color:${!compatible ? COLORS.danger : selected ? COLORS.gold : COLORS.textMuted};` },
+                !compatible ? reason : selected ? "Same as last load" : `${b.pct}% full`
+              ),
             ]),
             isWetStaging
               ? h(
