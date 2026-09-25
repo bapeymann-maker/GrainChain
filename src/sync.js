@@ -41,7 +41,16 @@ async function supabaseRequest(path, options = {}) {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Supabase request failed (${res.status}): ${text}`);
+    let parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      // non-JSON error body — leave parsed as null, message text still captured below
+    }
+    const err = new Error(`Supabase request failed (${res.status}): ${text}`);
+    err.status = res.status;
+    err.code = parsed?.code; // Postgres SQLSTATE, e.g. "23505" for a unique-constraint conflict
+    throw err;
   }
   return res.status === 204 ? null : res.json();
 }
@@ -55,16 +64,24 @@ async function pushPendingLoads() {
 
   for (const load of pending) {
     try {
-      // on_conflict on client_id lets a duplicate POST (retry after a
-      // dropped response) resolve to a no-op instead of a duplicate row.
-      await supabaseRequest("/rest/v1/loads?on_conflict=client_id", {
+      // Plain insert only — loads is deliberately insert-only for the
+      // kiosk's anon key (no select/update grant), so retry-safety can't
+      // rely on an upsert. Instead, a duplicate-key error on retry (the
+      // unique constraint on client_id) is treated as success below,
+      // since it just means an earlier attempt already landed.
+      await supabaseRequest("/rest/v1/loads", {
         method: "POST",
-        headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+        headers: { Prefer: "return=minimal" },
         body: JSON.stringify(toLoadRow(load)),
       });
       await markSynced(load.localId);
       pushed += 1;
     } catch (err) {
+      if (err.code === "23505") {
+        await markSynced(load.localId);
+        pushed += 1;
+        continue;
+      }
       // Leave it queued — it'll retry next cycle. One failed record
       // should never block the rest of the queue from syncing.
       console.error("Sync failed for load", load.localId, err);
