@@ -48,6 +48,11 @@
       font-size: 13px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
       background: var(--panel); color: var(--text);
     }
+    .view-btn {
+      font-size: 13px; font-weight: 600; padding: 8px 14px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--panel-alt); color: var(--text); cursor: pointer;
+    }
+    .view-btn.active-view { border-color: var(--gold); background: var(--gold-dark); color: var(--gold); }
   </style>
 </head>
 <body>
@@ -72,11 +77,13 @@
         <option value="transitional">Transitional</option>
         <option value="conventional">Conventional</option>
       </select>
+      <button id="view-loads-btn" class="view-btn active-view">All Loads</button>
+      <button id="view-field-btn" class="view-btn">By Field</button>
       <button id="refresh-btn" style="border:1px solid var(--border);background:var(--panel-alt);color:var(--text);border-radius:8px;padding:8px 14px;cursor:pointer;">Refresh</button>
     </div>
     <div id="status-line">Loading…</div>
     <div id="table-wrap">
-      <table>
+      <table id="loads-table">
         <thead>
           <tr>
             <th data-sort="logged_at">Time</th>
@@ -86,10 +93,26 @@
             <th data-sort="status">Status</th>
             <th data-sort="truck">Truck</th>
             <th data-sort="load">Load</th>
+            <th data-sort="moisture">Moisture</th>
+            <th data-sort="test_weight">Test Wt</th>
             <th data-sort="bin">Bin</th>
           </tr>
         </thead>
         <tbody id="rows"></tbody>
+      </table>
+      <table id="field-table" style="display:none;">
+        <thead>
+          <tr>
+            <th data-fsort="field">Field</th>
+            <th data-fsort="crop">Crop</th>
+            <th data-fsort="status">Status</th>
+            <th data-fsort="count">Loads</th>
+            <th data-fsort="totalBushels">Total Bushels</th>
+            <th data-fsort="avgMoisture">Avg Moisture</th>
+            <th data-fsort="avgTestWeight">Avg Test Wt</th>
+          </tr>
+        </thead>
+        <tbody id="field-rows"></tbody>
       </table>
     </div>
   </div>
@@ -99,8 +122,8 @@
 
     // TODO: same Project URL / anon key as index.html.
     const supabase = createClient(
-      "https://ewzlxjimbxwurzbjzbxw.supabase.co",
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3emx4amltYnh3dXJ6Ymp6Ynh3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3NDA4NDksImV4cCI6MjEwNTMxNjg0OX0.wJTPNqDP07_129K_90X-SOb4oji8ZENWi4S9L0xjGQk"
+      "https://YOUR-PROJECT.supabase.co",
+      "YOUR-ANON-KEY"
     );
 
     const loginView = document.getElementById("login-view");
@@ -110,6 +133,11 @@
     const loginError = document.getElementById("login-error");
     const statusLine = document.getElementById("status-line");
     const rowsEl = document.getElementById("rows");
+    const fieldRowsEl = document.getElementById("field-rows");
+    const loadsTable = document.getElementById("loads-table");
+    const fieldTable = document.getElementById("field-table");
+    const viewLoadsBtn = document.getElementById("view-loads-btn");
+    const viewFieldBtn = document.getElementById("view-field-btn");
     const searchEl = document.getElementById("search");
     const statusFilterEl = document.getElementById("status-filter");
     const refreshBtn = document.getElementById("refresh-btn");
@@ -117,6 +145,21 @@
     let allLoads = [];
     let sortKey = "logged_at";
     let sortDir = "desc";
+    let viewMode = "loads"; // "loads" | "field"
+    let fieldSortKey = "field";
+    let fieldSortDir = "asc";
+
+    // Same crop-standard bushel weights used in the bin_levels view, so
+    // totals here agree with what the kiosk/bin fill % are computed from.
+    const CROP_STANDARD_LB_PER_BU = { Corn: 56, Soybeans: 60, Oats: 32 };
+    function toBushels(l) {
+      if (l.bushels_raw != null) return l.bushels_raw;
+      if (l.weight_lb_raw != null) {
+        const factor = l.test_weight_raw || CROP_STANDARD_LB_PER_BU[l.crop_raw] || 56;
+        return l.weight_lb_raw / factor;
+      }
+      return 0;
+    }
 
     function showLogin() {
       loginView.classList.remove("hidden");
@@ -149,6 +192,23 @@
     searchEl.addEventListener("input", render);
     statusFilterEl.addEventListener("change", render);
 
+    viewLoadsBtn.addEventListener("click", () => {
+      viewMode = "loads";
+      viewLoadsBtn.classList.add("active-view");
+      viewFieldBtn.classList.remove("active-view");
+      loadsTable.style.display = "";
+      fieldTable.style.display = "none";
+      render();
+    });
+    viewFieldBtn.addEventListener("click", () => {
+      viewMode = "field";
+      viewFieldBtn.classList.add("active-view");
+      viewLoadsBtn.classList.remove("active-view");
+      loadsTable.style.display = "none";
+      fieldTable.style.display = "";
+      render();
+    });
+
     document.querySelectorAll("th[data-sort]").forEach((th) => {
       th.addEventListener("click", () => {
         const key = th.dataset.sort;
@@ -157,6 +217,19 @@
         } else {
           sortKey = key;
           sortDir = "desc";
+        }
+        render();
+      });
+    });
+
+    document.querySelectorAll("th[data-fsort]").forEach((th) => {
+      th.addEventListener("click", () => {
+        const key = th.dataset.fsort;
+        if (fieldSortKey === key) {
+          fieldSortDir = fieldSortDir === "asc" ? "desc" : "asc";
+        } else {
+          fieldSortKey = key;
+          fieldSortDir = key === "field" ? "asc" : "desc";
         }
         render();
       });
@@ -181,7 +254,16 @@
         status: l.is_buffer ? "conventional" : l.fields?.status || null,
         truck: l.truck ? `Truck ${l.truck}` : "Buffer truck",
         load: l.bushels != null ? `${l.bushels.toLocaleString()} bu` : l.weight_lb != null ? `${l.weight_lb.toLocaleString()} lb (est.)` : "—",
+        moisture: l.moisture_pct != null ? `${l.moisture_pct}%` : "—",
+        test_weight: l.test_weight != null ? `${l.test_weight} lb/bu` : "—",
         bin: l.bins?.name || l.bin_id,
+        // raw numeric values, kept alongside the display strings above, for
+        // the By Field totals/averages
+        bushels_raw: l.bushels,
+        weight_lb_raw: l.weight_lb,
+        moisture_raw: l.moisture_pct,
+        test_weight_raw: l.test_weight,
+        crop_raw: l.crop || l.fields?.crop || null,
       }));
       statusLine.textContent = `${allLoads.length} load${allLoads.length === 1 ? "" : "s"}`;
       render();
@@ -197,7 +279,15 @@
         return [r.worker, r.field, r.bin, r.crop].some((v) => (v || "").toLowerCase().includes(search));
       });
 
-      rows.sort((a, b) => {
+      if (viewMode === "loads") {
+        renderLoadsTable(rows);
+      } else {
+        renderFieldSummary(rows);
+      }
+    }
+
+    function renderLoadsTable(rows) {
+      rows = [...rows].sort((a, b) => {
         const av = a[sortKey] ?? "";
         const bv = b[sortKey] ?? "";
         const cmp = av < bv ? -1 : av > bv ? 1 : 0;
@@ -219,9 +309,72 @@
           <td>${statusBadge}</td>
           <td>${escapeHtml(r.truck)}</td>
           <td>${escapeHtml(r.load)}</td>
+          <td>${escapeHtml(r.moisture)}</td>
+          <td>${escapeHtml(r.test_weight)}</td>
           <td>${escapeHtml(r.bin)}</td>
         `;
         rowsEl.appendChild(tr);
+      });
+    }
+
+    function renderFieldSummary(rows) {
+      const byField = new Map();
+      rows.forEach((r) => {
+        if (!byField.has(r.field)) {
+          byField.set(r.field, {
+            field: r.field,
+            crop: r.crop,
+            status: r.status,
+            count: 0,
+            totalBushels: 0,
+            moistureSum: 0,
+            moistureCount: 0,
+            testWeightSum: 0,
+            testWeightCount: 0,
+          });
+        }
+        const g = byField.get(r.field);
+        g.count += 1;
+        g.totalBushels += toBushels(r);
+        if (r.moisture_raw != null) {
+          g.moistureSum += r.moisture_raw;
+          g.moistureCount += 1;
+        }
+        if (r.test_weight_raw != null) {
+          g.testWeightSum += r.test_weight_raw;
+          g.testWeightCount += 1;
+        }
+      });
+
+      let summary = Array.from(byField.values()).map((g) => ({
+        ...g,
+        avgMoisture: g.moistureCount ? g.moistureSum / g.moistureCount : null,
+        avgTestWeight: g.testWeightCount ? g.testWeightSum / g.testWeightCount : null,
+      }));
+
+      summary.sort((a, b) => {
+        const av = a[fieldSortKey] ?? "";
+        const bv = b[fieldSortKey] ?? "";
+        const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+        return fieldSortDir === "asc" ? cmp : -cmp;
+      });
+
+      fieldRowsEl.innerHTML = "";
+      summary.forEach((g) => {
+        const tr = document.createElement("tr");
+        const statusBadge = g.status
+          ? `<span class="badge badge-${g.status}">${g.status[0].toUpperCase()}${g.status.slice(1)}</span>`
+          : "—";
+        tr.innerHTML = `
+          <td>${escapeHtml(g.field)}</td>
+          <td>${escapeHtml(g.crop)}</td>
+          <td>${statusBadge}</td>
+          <td>${g.count}</td>
+          <td>${g.totalBushels.toLocaleString(undefined, { maximumFractionDigits: 0 })} bu</td>
+          <td>${g.avgMoisture != null ? g.avgMoisture.toFixed(1) + "%" : "—"}</td>
+          <td>${g.avgTestWeight != null ? g.avgTestWeight.toFixed(1) + " lb/bu" : "—"}</td>
+        `;
+        fieldRowsEl.appendChild(tr);
       });
     }
 
