@@ -19,7 +19,7 @@ import {
 } from "./db.js";
 
 const POLL_INTERVAL_MS = 30_000; // retry every 30s in case 'online' misfires
-const REFERENCE_TABLES = ["fields", "bins"]; // extend as the schema grows
+const REFERENCE_TABLES = ["fields", "bins", "workers"]; // extend as the schema grows
 
 let config = null;
 let syncing = false;

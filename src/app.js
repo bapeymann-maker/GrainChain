@@ -7,24 +7,17 @@
 
 import { queueLoad, getReference, getAllLoads } from "./db.js";
 
-// ---------------------------------------------------------------------
-// TODO: there is no `workers` table in Supabase yet — this is a
-// placeholder roster with hardcoded PINs, same as the original prototype.
-// Replace with a real reference table (and pull it via getReference like
-// fields/bins) once that schema exists.
-// ---------------------------------------------------------------------
-const WORKERS = [
-  { id: "w1", name: "Ben H.", pin: "4471" },
-  { id: "w2", name: "Cody M.", pin: "4482" },
-  { id: "w3", name: "Sam R.", pin: "4493" },
-];
+// Worker roster (id, name, pin) comes from Supabase's `workers` table via
+// getReference("workers") — see state.workers below. Note: PINs are
+// pulled to the client the same way fields/bins are, so they're visible
+// in this browser's IndexedDB/DevTools to anyone with access to the
+// kiosk. Fine for an internal crew roster; if that's ever not fine,
+// swap PIN verification for a server-side check (Supabase Edge
+// Function) instead of comparing against the full local list.
 
-// TODO: these per-truck bushel figures are PLACEHOLDER values carried
-// over from the original demo — they are not real trailer capacities.
-// Confirm actual bushel capacity per truck/trailer before trusting the
-// "full truck, no weight entry" shortcut with real data.
-const TRUCKS = ["1", "2", "3", "4", "5", "6"];
-const TRUCK_BUSHELS = { "1": 950, "2": 980, "3": 1000, "4": 940, "5": 970, "6": 990 };
+// Per-truck bushel capacity when a truck is marked full — all 8 confirmed at 1000 bu.
+const TRUCKS = ["U1", "U2", "U3", "U4", "U5", "U6", "U7", "U8"];
+const TRUCK_BUSHELS = { U1: 1000, U2: 1000, U3: 1000, U4: 1000, U5: 1000, U6: 1000, U7: 1000, U8: 1000 };
 const CROPS = ["Corn", "Soybeans", "Oats"];
 
 const COLORS = {
@@ -129,6 +122,7 @@ const state = {
 
   fields: [],
   bins: [],
+  workers: [],
   statusFilter: "All",
   cropChoice: null,
 
@@ -154,8 +148,8 @@ function setState(patch) {
 }
 
 async function refreshReference() {
-  const [fields, bins] = await Promise.all([getReference("fields"), getReference("bins")]);
-  setState({ fields: fields || [], bins: bins || [] });
+  const [fields, bins, workers] = await Promise.all([getReference("fields"), getReference("bins"), getReference("workers")]);
+  setState({ fields: fields || [], bins: bins || [], workers: workers || [] });
 }
 
 async function refreshTodayLog() {
@@ -214,6 +208,16 @@ function loginScreen() {
     ])
   );
 
+  if (state.workers.length === 0) {
+    wrap.appendChild(
+      h(
+        "div",
+        { style: `border:1px dashed ${COLORS.border};border-radius:10px;padding:14px;color:${COLORS.textMuted};font-size:13px;text-align:center;` },
+        "No worker roster synced yet — no PIN will be accepted until this Chromebook has connected to the internet at least once."
+      )
+    );
+  }
+
   const input = h("input", {
     inputmode: "numeric",
     placeholder: "Enter PIN",
@@ -226,7 +230,7 @@ function loginScreen() {
   });
 
   const submit = () => {
-    const match = WORKERS.find((w) => w.pin === state.pin);
+    const match = state.workers.find((w) => w.pin === state.pin && w.active !== false);
     if (!match) {
       setState({ pinError: "PIN not recognized. Try again." });
       return;
@@ -257,9 +261,19 @@ function homeScreen() {
   const wrap = h("div", { style: "display:flex;flex-direction:column;gap:14px;" });
   wrap.appendChild(h("div", { style: `${HEAD}font-size:24px;font-weight:700;color:${COLORS.text};` }, "What are you logging?"));
 
+  if (state.cropChoice && state.field && state.bin) {
+    wrap.appendChild(
+      bigButton(`${state.field.name} → ${state.bin.name}`, {
+        tone: "gold",
+        sub: `Same as last load — ${state.cropChoice} — straight to truck`,
+        onClick: () => setState({ screen: "truck" }),
+      })
+    );
+  }
+
   wrap.appendChild(
     bigButton("Field delivery", {
-      tone: "gold",
+      tone: state.cropChoice && state.field && state.bin ? "default" : "gold",
       sub: "Pit → wet bin, at the home site",
       onClick: () => setState({ screen: "crop" }),
     })
@@ -786,18 +800,23 @@ function logPanel() {
   const rows = h("div", { style: "display:flex;flex-direction:column;gap:6px;max-height:90px;overflow-y:auto;" });
   state.todayLog.forEach((entry) => {
     const time = new Date(entry.queuedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    const worker = WORKERS.find((w) => w.id === entry.workerId);
+    const worker = state.workers.find((w) => w.id === entry.workerId);
     const field = state.fields.find((f) => f.id === entry.fieldId);
     const bin = state.bins.find((b) => b.id === entry.binId);
     const truckLabel = entry.truck ? `Truck ${entry.truck}` : "Buffer truck";
+    const effectiveStatus = entry.isBuffer ? "conventional" : field ? field.status : null;
     rows.appendChild(
-      h("div", { style: `font-size:12px;color:${COLORS.textMuted};display:flex;gap:8px;` }, [
+      h("div", { style: `font-size:12px;color:${COLORS.textMuted};display:flex;align-items:center;gap:8px;` }, [
         h("span", { style: `color:${COLORS.text};` }, time),
         h("span", {}, worker ? worker.name : entry.workerId),
         h("span", {}, "·"),
         h("span", {}, field ? field.name : entry.fieldId),
         h("span", {}, "·"),
         h("span", {}, truckLabel),
+        h("span", {}, "·"),
+        h("span", {}, entry.crop || "—"),
+        h("span", {}, "·"),
+        effectiveStatus ? badge(effectiveStatus) : h("span", {}, "—"),
         h("span", {}, "·"),
         h("span", {}, bin ? bin.name : entry.binId),
         !entry.synced ? h("span", { style: `color:${COLORS.amber};` }, "pending") : null,
