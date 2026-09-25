@@ -19,7 +19,11 @@ import {
 } from "./db.js";
 
 const POLL_INTERVAL_MS = 30_000; // retry every 30s in case 'online' misfires
-const REFERENCE_TABLES = ["fields", "bins", "workers"]; // extend as the schema grows
+const REFERENCE_TABLES = [
+  { key: "fields", endpoint: "fields" },
+  { key: "bins", endpoint: "bin_levels" }, // live-computed fill % — see create-bin-levels-view.sql
+  { key: "workers", endpoint: "workers" },
+]; // extend as the schema grows
 
 let config = null;
 let syncing = false;
@@ -115,16 +119,16 @@ function toLoadRow(load) {
 }
 
 async function pullReferenceData() {
-  for (const table of REFERENCE_TABLES) {
+  for (const { key, endpoint } of REFERENCE_TABLES) {
     try {
-      const rows = await supabaseRequest(`/rest/v1/${table}?select=*`);
-      await cacheReference(table, rows);
+      const rows = await supabaseRequest(`/rest/v1/${endpoint}?select=*`);
+      await cacheReference(key, rows);
       // Lets the running UI (app.js) pick up fresh reference data — e.g. a
       // clean-bin affidavit logged elsewhere — without a manual reload.
       window.dispatchEvent(new CustomEvent("grainchain:reference-updated"));
     } catch (err) {
       // Offline or table not reachable — keep serving the last cached copy.
-      console.warn(`Could not refresh reference table "${table}"`, err);
+      console.warn(`Could not refresh reference table "${key}"`, err);
     }
   }
 }

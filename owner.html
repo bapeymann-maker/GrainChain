@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GrainChain — Load Log</title>
+  <style>
+    :root {
+      --ink: #171B1E; --panel: #1F2529; --panel-alt: #262D32; --border: #343B40;
+      --gold: #D4A017; --gold-dark: #3A2F0E; --text: #F4F1E9; --text-muted: #9AA2A8;
+      --organic: #5C8A3A; --organic-dark: #1D2A13;
+      --transitional: #B08F5A; --transitional-dark: #2F2717;
+      --conventional: #6B7480; --conventional-dark: #20242A;
+      --danger: #C0453A;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--ink); color: var(--text); min-height: 100%; }
+    body { font-family: Inter, -apple-system, "Segoe UI", sans-serif; }
+    h1 { font-family: 'Bahnschrift','DIN Alternate','Arial Narrow',sans-serif; color: var(--gold); }
+    #login-view { display: flex; flex-direction: column; gap: 16px; max-width: 360px; margin: 80px auto; padding: 0 20px; }
+    #login-view input {
+      font-size: 16px; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--panel); color: var(--text);
+    }
+    #login-view button {
+      font-size: 16px; font-weight: 700; padding: 12px; border-radius: 8px;
+      border: 1px solid var(--gold); background: var(--gold-dark); color: var(--gold); cursor: pointer;
+    }
+    #login-error { color: var(--danger); font-size: 13px; min-height: 16px; }
+    #log-view { display: none; padding: 24px; }
+    #log-view.visible { display: block; }
+    #login-view.hidden { display: none; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+    .topbar button { background: none; border: none; color: var(--text-muted); font-size: 13px; cursor: pointer; text-decoration: underline; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    th { color: var(--text-muted); font-weight: 600; position: sticky; top: 0; background: var(--ink); cursor: pointer; user-select: none; }
+    th:hover { color: var(--gold); }
+    tbody tr:hover { background: var(--panel); }
+    .badge { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+    .badge-organic { color: var(--organic); background: var(--organic-dark); }
+    .badge-transitional { color: var(--transitional); background: var(--transitional-dark); }
+    .badge-conventional { color: var(--conventional); background: var(--conventional-dark); }
+    #table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+    #status-line { color: var(--text-muted); font-size: 13px; margin-bottom: 10px; }
+    #filter-row { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+    #filter-row input, #filter-row select {
+      font-size: 13px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--panel); color: var(--text);
+    }
+  </style>
+</head>
+<body>
+  <div id="login-view">
+    <h1 style="font-size:24px;margin:0;">GrainChain — Load Log</h1>
+    <input id="email" type="email" placeholder="Email" autocomplete="username" />
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password" />
+    <div id="login-error"></div>
+    <button id="login-btn">Log in</button>
+  </div>
+
+  <div id="log-view">
+    <div class="topbar">
+      <h1 style="font-size:22px;margin:0;">GrainChain — Load Log</h1>
+      <button id="logout-btn">Log out</button>
+    </div>
+    <div id="filter-row">
+      <input id="search" type="text" placeholder="Search field, worker, bin..." style="flex:1;min-width:200px;" />
+      <select id="status-filter">
+        <option value="">All statuses</option>
+        <option value="organic">Organic</option>
+        <option value="transitional">Transitional</option>
+        <option value="conventional">Conventional</option>
+      </select>
+      <button id="refresh-btn" style="border:1px solid var(--border);background:var(--panel-alt);color:var(--text);border-radius:8px;padding:8px 14px;cursor:pointer;">Refresh</button>
+    </div>
+    <div id="status-line">Loading…</div>
+    <div id="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th data-sort="logged_at">Time</th>
+            <th data-sort="worker">Worker</th>
+            <th data-sort="field">Field</th>
+            <th data-sort="crop">Crop</th>
+            <th data-sort="status">Status</th>
+            <th data-sort="truck">Truck</th>
+            <th data-sort="load">Load</th>
+            <th data-sort="bin">Bin</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script type="module">
+    import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+    // TODO: same Project URL / anon key as index.html.
+    const supabase = createClient(
+      "https://ewzlxjimbxwurzbjzbxw.supabase.co",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3emx4amltYnh3dXJ6Ymp6Ynh3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3NDA4NDksImV4cCI6MjEwNTMxNjg0OX0.wJTPNqDP07_129K_90X-SOb4oji8ZENWi4S9L0xjGQk"
+    );
+
+    const loginView = document.getElementById("login-view");
+    const logView = document.getElementById("log-view");
+    const loginBtn = document.getElementById("login-btn");
+    const logoutBtn = document.getElementById("logout-btn");
+    const loginError = document.getElementById("login-error");
+    const statusLine = document.getElementById("status-line");
+    const rowsEl = document.getElementById("rows");
+    const searchEl = document.getElementById("search");
+    const statusFilterEl = document.getElementById("status-filter");
+    const refreshBtn = document.getElementById("refresh-btn");
+
+    let allLoads = [];
+    let sortKey = "logged_at";
+    let sortDir = "desc";
+
+    function showLogin() {
+      loginView.classList.remove("hidden");
+      logView.classList.remove("visible");
+    }
+    function showLog() {
+      loginView.classList.add("hidden");
+      logView.classList.add("visible");
+      fetchLoads();
+    }
+
+    loginBtn.addEventListener("click", async () => {
+      loginError.textContent = "";
+      const email = document.getElementById("email").value.trim();
+      const password = document.getElementById("password").value;
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        loginError.textContent = error.message;
+        return;
+      }
+      showLog();
+    });
+
+    logoutBtn.addEventListener("click", async () => {
+      await supabase.auth.signOut();
+      showLogin();
+    });
+
+    refreshBtn.addEventListener("click", fetchLoads);
+    searchEl.addEventListener("input", render);
+    statusFilterEl.addEventListener("change", render);
+
+    document.querySelectorAll("th[data-sort]").forEach((th) => {
+      th.addEventListener("click", () => {
+        const key = th.dataset.sort;
+        if (sortKey === key) {
+          sortDir = sortDir === "asc" ? "desc" : "asc";
+        } else {
+          sortKey = key;
+          sortDir = "desc";
+        }
+        render();
+      });
+    });
+
+    async function fetchLoads() {
+      statusLine.textContent = "Loading…";
+      const { data, error } = await supabase
+        .from("loads")
+        .select("*, fields(name, crop, status), bins(name), workers(name)")
+        .order("logged_at", { ascending: false })
+        .limit(1000);
+      if (error) {
+        statusLine.textContent = "Error loading: " + error.message;
+        return;
+      }
+      allLoads = data.map((l) => ({
+        logged_at: l.logged_at,
+        worker: l.workers?.name || l.worker_id,
+        field: l.fields?.name || l.field_id,
+        crop: l.crop || l.fields?.crop || "—",
+        status: l.is_buffer ? "conventional" : l.fields?.status || null,
+        truck: l.truck ? `Truck ${l.truck}` : "Buffer truck",
+        load: l.bushels != null ? `${l.bushels.toLocaleString()} bu` : l.weight_lb != null ? `${l.weight_lb.toLocaleString()} lb (est.)` : "—",
+        bin: l.bins?.name || l.bin_id,
+      }));
+      statusLine.textContent = `${allLoads.length} load${allLoads.length === 1 ? "" : "s"}`;
+      render();
+    }
+
+    function render() {
+      const search = searchEl.value.trim().toLowerCase();
+      const statusFilter = statusFilterEl.value;
+
+      let rows = allLoads.filter((r) => {
+        if (statusFilter && r.status !== statusFilter) return false;
+        if (!search) return true;
+        return [r.worker, r.field, r.bin, r.crop].some((v) => (v || "").toLowerCase().includes(search));
+      });
+
+      rows.sort((a, b) => {
+        const av = a[sortKey] ?? "";
+        const bv = b[sortKey] ?? "";
+        const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+        return sortDir === "asc" ? cmp : -cmp;
+      });
+
+      rowsEl.innerHTML = "";
+      rows.forEach((r) => {
+        const tr = document.createElement("tr");
+        const time = r.logged_at ? new Date(r.logged_at).toLocaleString() : "—";
+        const statusBadge = r.status
+          ? `<span class="badge badge-${r.status}">${r.status[0].toUpperCase()}${r.status.slice(1)}</span>`
+          : "—";
+        tr.innerHTML = `
+          <td>${time}</td>
+          <td>${escapeHtml(r.worker)}</td>
+          <td>${escapeHtml(r.field)}</td>
+          <td>${escapeHtml(r.crop)}</td>
+          <td>${statusBadge}</td>
+          <td>${escapeHtml(r.truck)}</td>
+          <td>${escapeHtml(r.load)}</td>
+          <td>${escapeHtml(r.bin)}</td>
+        `;
+        rowsEl.appendChild(tr);
+      });
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement("div");
+      div.textContent = s == null ? "" : String(s);
+      return div.innerHTML;
+    }
+
+    // Restore session on reload rather than forcing a fresh login every time.
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session) {
+      showLog();
+    } else {
+      showLogin();
+    }
+  </script>
+</body>
+</html>
