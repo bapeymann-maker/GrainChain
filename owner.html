@@ -41,6 +41,10 @@
     .badge-organic { color: var(--organic); background: var(--organic-dark); }
     .badge-transitional { color: var(--transitional); background: var(--transitional-dark); }
     .badge-conventional { color: var(--conventional); background: var(--conventional-dark); }
+    .badge-match { color: var(--organic); background: var(--organic-dark); }
+    .badge-review { color: #E2812B; background: #3A250D; }
+    .badge-none { color: var(--text-muted); background: var(--panel-alt); }
+    .photo-link { color: var(--gold); font-size: 12px; text-decoration: underline; background: none; border: none; cursor: pointer; padding: 0; }
     #table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
     #status-line { color: var(--text-muted); font-size: 13px; margin-bottom: 10px; }
     #filter-row { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -79,6 +83,7 @@
       </select>
       <button id="view-loads-btn" class="view-btn active-view">All Loads</button>
       <button id="view-field-btn" class="view-btn">By Field</button>
+      <button id="view-hauls-btn" class="view-btn">Hauls &amp; Tickets</button>
       <button id="refresh-btn" style="border:1px solid var(--border);background:var(--panel-alt);color:var(--text);border-radius:8px;padding:8px 14px;cursor:pointer;">Refresh</button>
     </div>
     <div id="status-line">Loading…</div>
@@ -114,6 +119,23 @@
         </thead>
         <tbody id="field-rows"></tbody>
       </table>
+      <table id="hauls-table" style="display:none;">
+        <thead>
+          <tr>
+            <th data-hsort="departed_at">Departed</th>
+            <th data-hsort="driver">Driver</th>
+            <th data-hsort="origin">From</th>
+            <th data-hsort="destination">To</th>
+            <th data-hsort="rig">Truck/Trailer</th>
+            <th data-hsort="ticketNumber">Ticket #</th>
+            <th data-hsort="driverNet">Driver entry</th>
+            <th data-hsort="aiNet">AI reading</th>
+            <th data-hsort="checkStatus">Check</th>
+            <th>Photo</th>
+          </tr>
+        </thead>
+        <tbody id="hauls-rows"></tbody>
+      </table>
     </div>
   </div>
 
@@ -122,8 +144,8 @@
 
     // TODO: same Project URL / anon key as index.html.
     const supabase = createClient(
-      "https://ewzlxjimbxwurzbjzbxw.supabase.co",
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3emx4amltYnh3dXJ6Ymp6Ynh3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3NDA4NDksImV4cCI6MjEwNTMxNjg0OX0.wJTPNqDP07_129K_90X-SOb4oji8ZENWi4S9L0xjGQk"
+      "https://YOUR-PROJECT.supabase.co",
+      "YOUR-ANON-KEY"
     );
 
     const loginView = document.getElementById("login-view");
@@ -138,11 +160,18 @@
     const fieldTable = document.getElementById("field-table");
     const viewLoadsBtn = document.getElementById("view-loads-btn");
     const viewFieldBtn = document.getElementById("view-field-btn");
+    const viewHaulsBtn = document.getElementById("view-hauls-btn");
+    const haulsTable = document.getElementById("hauls-table");
+    const haulsRowsEl = document.getElementById("hauls-rows");
     const searchEl = document.getElementById("search");
     const statusFilterEl = document.getElementById("status-filter");
     const refreshBtn = document.getElementById("refresh-btn");
 
     let allLoads = [];
+    let allHauls = [];
+    let haulsLoaded = false;
+    let haulSortKey = "departed_at";
+    let haulSortDir = "desc";
     let sortKey = "logged_at";
     let sortDir = "desc";
     let viewMode = "loads"; // "loads" | "field"
@@ -196,17 +225,45 @@
       viewMode = "loads";
       viewLoadsBtn.classList.add("active-view");
       viewFieldBtn.classList.remove("active-view");
+      viewHaulsBtn.classList.remove("active-view");
       loadsTable.style.display = "";
       fieldTable.style.display = "none";
+      haulsTable.style.display = "none";
       render();
     });
     viewFieldBtn.addEventListener("click", () => {
       viewMode = "field";
       viewFieldBtn.classList.add("active-view");
       viewLoadsBtn.classList.remove("active-view");
+      viewHaulsBtn.classList.remove("active-view");
       loadsTable.style.display = "none";
       fieldTable.style.display = "";
+      haulsTable.style.display = "none";
       render();
+    });
+    viewHaulsBtn.addEventListener("click", async () => {
+      viewMode = "hauls";
+      viewHaulsBtn.classList.add("active-view");
+      viewLoadsBtn.classList.remove("active-view");
+      viewFieldBtn.classList.remove("active-view");
+      loadsTable.style.display = "none";
+      fieldTable.style.display = "none";
+      haulsTable.style.display = "";
+      if (!haulsLoaded) await fetchHauls();
+      render();
+    });
+
+    document.querySelectorAll("th[data-hsort]").forEach((th) => {
+      th.addEventListener("click", () => {
+        const key = th.dataset.hsort;
+        if (haulSortKey === key) {
+          haulSortDir = haulSortDir === "asc" ? "desc" : "asc";
+        } else {
+          haulSortKey = key;
+          haulSortDir = "desc";
+        }
+        render();
+      });
     });
 
     document.querySelectorAll("th[data-sort]").forEach((th) => {
@@ -281,8 +338,10 @@
 
       if (viewMode === "loads") {
         renderLoadsTable(rows);
-      } else {
+      } else if (viewMode === "field") {
         renderFieldSummary(rows);
+      } else {
+        renderHaulsTable();
       }
     }
 
@@ -375,6 +434,116 @@
           <td>${g.avgTestWeight != null ? g.avgTestWeight.toFixed(1) + " lb/bu" : "—"}</td>
         `;
         fieldRowsEl.appendChild(tr);
+      });
+    }
+
+    async function fetchHauls() {
+      statusLine.textContent = "Loading…";
+      const [shipRes, tkRes, readRes] = await Promise.all([
+        supabase.from("shipments").select("*, bins(name), fields(name), destinations(name, location), workers(name)").order("departed_at", { ascending: false }).limit(500),
+        supabase.from("shipment_tickets").select("*").order("created_at", { ascending: false }).limit(1000),
+        supabase.from("ticket_reads").select("*").order("read_at", { ascending: false }).limit(1000),
+      ]);
+      if (shipRes.error) { statusLine.textContent = "Error loading: " + shipRes.error.message; return; }
+
+      // Newest ticket per haul, newest AI read per ticket — same "latest
+      // wins, history stays in the table" rule the app itself uses.
+      const newestTicket = new Map();
+      (tkRes.data || []).forEach((t) => {
+        const cur = newestTicket.get(t.shipment_client_id);
+        if (!cur || t.created_at > cur.created_at) newestTicket.set(t.shipment_client_id, t);
+      });
+      const newestRead = new Map();
+      (readRes.data || []).forEach((r) => {
+        if (!r.ticket_client_id) return;
+        const cur = newestRead.get(r.ticket_client_id);
+        if (!cur || r.read_at > cur.read_at) newestRead.set(r.ticket_client_id, r);
+      });
+
+      allHauls = (shipRes.data || []).map((s) => {
+        const ticket = newestTicket.get(s.client_id) || null;
+        const read = ticket ? newestRead.get(ticket.client_id) : null;
+        const origin = s.origin_type === "field" ? `${s.fields?.name || s.field_id || "—"} (field)` : s.bins?.name || s.bin_id || "—";
+        const destination = s.destination_name || s.destinations?.name || s.destination_id || "—";
+        const destLoc = (s.destination_location || s.destinations?.location || "").split(",")[0].trim();
+
+        let checkStatus = "none", checkLabel = "No ticket yet";
+        if (ticket && !read) { checkStatus = "review"; checkLabel = "Waiting on AI read"; }
+        else if (ticket && read?.error) { checkStatus = "review"; checkLabel = "AI read failed"; }
+        else if (ticket && read) {
+          const netClose = read.net_lb == null || ticket.net_lb == null || Math.abs(read.net_lb - ticket.net_lb) <= Math.max(50, ticket.net_lb * 0.01);
+          const buClose = read.net_bu == null || ticket.net_bu == null || Math.abs(read.net_bu - ticket.net_bu) <= Math.max(1, ticket.net_bu * 0.01);
+          if (read.needs_review || !netClose || !buClose) { checkStatus = "review"; checkLabel = "Needs review"; }
+          else { checkStatus = "match"; checkLabel = "Matches driver entry"; }
+        }
+
+        return {
+          departed_at: s.departed_at,
+          driver: s.workers?.name || s.worker_id,
+          origin, originStatus: s.origin_status,
+          destination: destLoc ? `${destination} (${destLoc})` : destination,
+          rig: s.truck ? `Truck ${s.truck} · ${s.trailer}` : s.trailer,
+          ticketNumber: ticket?.ticket_number || "—",
+          driverNet: ticket ? `${ticket.net_lb != null ? ticket.net_lb.toLocaleString() + " lb" : "—"} / ${ticket.net_bu != null ? ticket.net_bu.toLocaleString() + " bu" : "—"}` : "—",
+          aiNet: read && !read.error ? `${read.net_lb != null ? read.net_lb.toLocaleString() + " lb" : "—"} / ${read.net_bu != null ? read.net_bu.toLocaleString() + " bu" : "—"}` : read?.error ? "Read failed" : "—",
+          aiTicketNumber: read?.ticket_number || null,
+          aiTicketComplete: read?.ticket_number_complete,
+          checkStatus, checkLabel,
+          arithmeticCheck: read?.arithmetic_check || null,
+          photoPath: ticket?.photo_path || null,
+        };
+      });
+      haulsLoaded = true;
+      statusLine.textContent = `${allHauls.length} haul${allHauls.length === 1 ? "" : "s"}`;
+    }
+
+    async function showPhoto(path, btn) {
+      btn.textContent = "Loading…";
+      const { data, error } = await supabase.storage.from("scale-tickets").createSignedUrl(path, 3600);
+      if (error) { btn.textContent = "Could not load photo"; return; }
+      window.open(data.signedUrl, "_blank", "noopener");
+      btn.textContent = "View photo";
+    }
+
+    function renderHaulsTable() {
+      const search = searchEl.value.trim().toLowerCase();
+      const statusFilter = statusFilterEl.value;
+      let rows = allHauls.filter((r) => {
+        if (statusFilter && r.originStatus !== statusFilter) return false;
+        if (!search) return true;
+        return [r.driver, r.origin, r.destination, r.ticketNumber].some((v) => (v || "").toLowerCase().includes(search));
+      });
+      rows = [...rows].sort((a, b) => {
+        const av = a[haulSortKey] ?? "";
+        const bv = b[haulSortKey] ?? "";
+        const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+        return haulSortDir === "asc" ? cmp : -cmp;
+      });
+
+      haulsRowsEl.innerHTML = "";
+      rows.forEach((r) => {
+        const tr = document.createElement("tr");
+        const time = r.departed_at ? new Date(r.departed_at).toLocaleString() : "—";
+        const checkBadge = `<span class="badge badge-${r.checkStatus}">${escapeHtml(r.checkLabel)}</span>`;
+        const ticketMismatch = r.aiTicketNumber && r.ticketNumber !== "—" && r.aiTicketNumber !== r.ticketNumber && r.aiTicketComplete !== false;
+        const aiNetCell = ticketMismatch ? `${escapeHtml(r.aiNet)} <span title="AI read ticket #${escapeHtml(r.aiTicketNumber)}, driver entered ${escapeHtml(r.ticketNumber)}" style="color:var(--danger);">⚠</span>` : escapeHtml(r.aiNet);
+        tr.innerHTML = `
+          <td>${time}</td>
+          <td>${escapeHtml(r.driver)}</td>
+          <td>${escapeHtml(r.origin)}</td>
+          <td>${escapeHtml(r.destination)}</td>
+          <td>${escapeHtml(r.rig)}</td>
+          <td>${escapeHtml(r.ticketNumber)}</td>
+          <td>${escapeHtml(r.driverNet)}</td>
+          <td>${aiNetCell}</td>
+          <td>${checkBadge}</td>
+          <td>${r.photoPath ? `<button class="photo-link" data-path="${escapeHtml(r.photoPath)}">View photo</button>` : "—"}</td>
+        `;
+        if (r.arithmeticCheck && r.arithmeticCheck.startsWith("fail")) tr.title = r.arithmeticCheck;
+        haulsRowsEl.appendChild(tr);
+      });
+      haulsRowsEl.querySelectorAll(".photo-link").forEach((btn) => {
+        btn.addEventListener("click", () => showPhoto(btn.dataset.path, btn));
       });
     }
 
