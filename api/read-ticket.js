@@ -66,7 +66,13 @@ const SCHEMA = {
   },
 };
 
-const PROMPT = `You are reading a photo of a grain scale ticket taken by a truck driver. The photo may be rotated, angled, partly covered by a clipboard clip or fingers, or show the same ticket printed twice (original and copy) — read it once. Transcribe only what is actually printed or written. If a value is covered, cut off, or unclear, return null for it and add a short note to legibility_issues; never infer a digit. For ticket_number, return the visible characters and set ticket_number_complete to false if any part is hidden. Copy handwritten notes exactly as written. Do not perform any arithmetic yourself — report the numbers as printed. If the photo does not contain a scale ticket at all, return null for every field and say so in legibility_issues.`;
+const PROMPT = `You are reading a photo of a grain scale ticket taken by a truck driver. Transcribe only what is actually printed or written. If a value is covered, cut off, or genuinely unclear, return null for it and add a short note to legibility_issues; never infer a digit. For ticket_number, return the visible characters and set ticket_number_complete to false if any part is hidden.
+
+legibility_issues is ONLY for things you could not confidently read — leave it empty otherwise. It is not a place for routine observations. In particular:
+- The photo may be rotated or angled, may be partly covered by a clipboard clip or fingers, and some buyers (Valero in particular) routinely print two copies of the same ticket on one page. All of this is normal. If both copies are legible, silently read from whichever is clearer — do not mention that there were two copies.
+- Tickets often carry fields with no home in the schema below (an account number, a carrier name, a contract type, etc.). Ignore anything that doesn't fit a field; do not note its absence.
+
+Copy handwritten notes exactly as written into handwritten_notes. Do not perform any arithmetic yourself — report the numbers as printed. If the photo does not contain a scale ticket at all, return null for every field and say so in legibility_issues.`;
 
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
