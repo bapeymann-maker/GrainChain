@@ -146,6 +146,7 @@ let lastScreen = null;
 function setState(patch) {
   Object.assign(state, patch);
   render();
+  resetInactivityTimer();
 }
 
 async function refreshReference() {
@@ -200,6 +201,38 @@ function logOut() {
   state.worker = null;
   clearTruckFields();
   setState({ screen: "login", pin: "" });
+}
+
+// ---------------------------------------------------------------------
+// Auto-logout after 5 minutes of inactivity. Only runs while someone is
+// actually logged in — a worker walking away without logging out
+// shouldn't leave the kiosk open for the next person to log under their
+// name. Any click/tap/key anywhere on the page resets the clock,
+// independent of whether that interaction happened to trigger a
+// re-render (some inputs mutate state directly without one).
+// ---------------------------------------------------------------------
+const INACTIVITY_TIMEOUT_MS = typeof globalThis.__GRAINCHAIN_INACTIVITY_MS__ === "number" ? globalThis.__GRAINCHAIN_INACTIVITY_MS__ : 5 * 60 * 1000;
+let inactivityTimer = null;
+
+function resetInactivityTimer() {
+  if (inactivityTimer) clearTimeout(inactivityTimer);
+  inactivityTimer = state.worker ? setTimeout(logOut, INACTIVITY_TIMEOUT_MS) : null;
+}
+
+function installInactivityWatcher() {
+  ["click", "touchstart", "keydown"].forEach((evt) => document.addEventListener(evt, resetInactivityTimer, { passive: true }));
+}
+
+// A way out of the current load from any step, without clicking Back
+// through every prior screen. Clears only this load's in-progress
+// fields — field/bin/crop stay picked for next time, same as elsewhere.
+function cancelLoadButton() {
+  return bigButton("Cancel — return to home", {
+    onClick: () => {
+      clearTruckFields();
+      setState({ screen: "home" });
+    },
+  });
 }
 
 // ---------------------------------------------------------------------
@@ -318,6 +351,7 @@ function cropScreen() {
     );
   });
   wrap.appendChild(linkButton("← Back", () => setState({ screen: "home" })));
+  wrap.appendChild(cancelLoadButton());
   return wrap;
 }
 
@@ -403,6 +437,7 @@ function fieldScreen() {
   }
 
   wrap.appendChild(linkButton("← Back", () => setState({ screen: "crop" })));
+  wrap.appendChild(cancelLoadButton());
   return wrap;
 }
 
@@ -568,6 +603,7 @@ function truckScreen() {
     })
   );
   wrap.appendChild(linkButton("← Back", () => setState({ screen: "field" })));
+  wrap.appendChild(cancelLoadButton());
   return wrap;
 }
 
@@ -683,6 +719,7 @@ function binScreen() {
   }
 
   wrap.appendChild(linkButton("← Back", () => setState({ screen: "truck" })));
+  wrap.appendChild(cancelLoadButton());
   return wrap;
 }
 
@@ -729,6 +766,7 @@ function confirmScreen() {
     })
   );
   wrap.appendChild(linkButton("← Back", () => setState({ screen: "bin" })));
+  wrap.appendChild(cancelLoadButton());
   return wrap;
 }
 
@@ -901,6 +939,7 @@ function render() {
 
 export async function mountApp(el) {
   root = el;
+  installInactivityWatcher();
   render(); // draw the login screen immediately, don't block on network
   await Promise.all([refreshReference(), refreshTodayLog()]);
 
