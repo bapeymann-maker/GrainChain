@@ -17,7 +17,7 @@
 //                               baked into the trigger in
 //                               create-ticket-reader.sql
 
-const MODEL = "claude-opus-5-5"; // accuracy matters here (money, audit trail); swap for claude-sonnet-5-5 if cost matters more than squeezing out the last bit of accuracy
+const MODEL = "claude-opus-4-8"; // opus-5-5/sonnet-5-5 don't support forced tool_choice (adaptive thinking is always on for them) — 4-8 does, and is still strong for reading a photo
 const STANDARD_LB_PER_BU = { corn: 56, soybeans: 60, oats: 32 };
 
 const SCHEMA = {
