@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#171B1E" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Deliveries" />
+  <title>GrainChain Deliveries</title>
+  <link rel="manifest" href="/manifest-deliveries.json" />
+  <link rel="icon" href="/icons/deliveries-192.png" />
+  <link rel="apple-touch-icon" href="/icons/deliveries-192.png" />
+  <style>
+    html, body { margin: 0; padding: 0; background: #171B1E; min-height: 100%; }
+    body { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+    * { -webkit-tap-highlight-color: transparent; }
+    #sync-status {
+      font: 11px Inter, system-ui, sans-serif; text-align: center; padding: 5px 10px;
+      color: #9AA2A8; background: #171B1E; border-bottom: 1px solid #262D32;
+    }
+    #sync-status.pending { color: #E2812B; }
+    #sync-status.error { color: #C0453A; }
+    #sync-status.synced { color: #5C8A3A; }
+    #config-error {
+      display: none; font: 13px Inter, system-ui, sans-serif; padding: 12px 16px;
+      color: #F4F1E9; background: #331512; border-bottom: 1px solid #C0453A;
+    }
+  </style>
+</head>
+<body>
+  <div id="sync-status">Starting…</div>
+  <div id="config-error"></div>
+  <div id="app"></div>
+
+  <script type="module">
+    import { initSync } from "/src/sync.js";
+    import { pendingCount } from "/src/db.js";
+    import { mountApp } from "/src/deliveries.js";
+    import { SUPABASE_URL, SUPABASE_ANON_KEY, configProblem } from "/src/config.js";
+
+    const statusEl = document.getElementById("sync-status");
+
+    function renderStatus(status) {
+      if (status === "offline") {
+        statusEl.textContent = "Offline — saved on this phone, will send when you have signal";
+        statusEl.className = "pending";
+        return;
+      }
+      if (status === "syncing") {
+        statusEl.textContent = "Syncing…";
+        statusEl.className = "";
+        return;
+      }
+      if (status?.state === "synced") {
+        statusEl.textContent = status.pending > 0 ? `Sent (${status.pending} still waiting to send)` : "All sent";
+        statusEl.className = status.pending > 0 ? "pending" : "synced";
+        return;
+      }
+      if (status?.state === "partial") {
+        statusEl.textContent = `${status.failed} item(s) didn't send — will retry`;
+        statusEl.className = "error";
+        return;
+      }
+      if (status?.state === "error") {
+        statusEl.textContent = "Couldn't reach the server — will retry";
+        statusEl.className = "error";
+      }
+    }
+
+    const problem = configProblem();
+    if (problem) {
+      const el = document.getElementById("config-error");
+      el.textContent = problem;
+      el.style.display = "block";
+      statusEl.textContent = "Not connected";
+      statusEl.className = "error";
+    } else {
+      initSync({
+        supabaseUrl: SUPABASE_URL,
+        supabaseAnonKey: SUPABASE_ANON_KEY,
+        reference: ["bins", "fields", "workers", "destinations", "recent_shipments"],
+        onStatusChange: renderStatus,
+      });
+      pendingCount().then((n) => {
+        if (n > 0) renderStatus({ state: "synced", pending: n });
+      });
+    }
+
+    mountApp(document.getElementById("app"));
+
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("/sw.js").catch(console.error);
+      });
+    }
+  </script>
+</body>
+</html>

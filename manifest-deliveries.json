@@ -1,0 +1,15 @@
+{
+  "id": "/deliveries.html",
+  "name": "GrainChain Deliveries",
+  "short_name": "Deliveries",
+  "description": "Start a haul to a buyer and enter scale tickets",
+  "start_url": "/deliveries.html",
+  "scope": "/deliveries.html",
+  "display": "standalone",
+  "background_color": "#171B1E",
+  "theme_color": "#171B1E",
+  "icons": [
+    { "src": "/icons/deliveries-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/deliveries-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

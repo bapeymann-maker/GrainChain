@@ -1,21 +1,29 @@
 // db.js
 // Local-first storage for the kiosk. Everything the kiosk writes goes here
-// FIRST, synchronously, before any network call is attempted. The kiosk
-// should never block on connectivity to log a load.
+// FIRST, before any network call is attempted. The kiosk should never
+// block on connectivity to log a load.
 //
 // Stores:
-//   pending_loads   - append-only queue of loads logged on this device,
-//                      each with synced: false until the sync module
-//                      confirms it landed in Supabase.
-//   reference        - cached copy of server data the kiosk needs to
-//                      function offline (fields, bins, affidavit status).
-//                      Keyed by a string key, e.g. "fields", "bins".
+//   pending_loads   - append-only queue of field loads logged on this device.
+//   shipments       - outbound hauls (bin -> buyer) started on this device.
+//   tickets         - scale ticket entries (append-only; newest wins). May
+//                      carry a photo Blob until it has uploaded.
+//   reference       - cached copy of server data the kiosk needs to
+//                      function offline (fields, bins, workers, ...).
+//
+// Each queue record has synced: false until sync.js confirms it landed.
 
 const DB_NAME = "ufer_kiosk";
-const DB_VERSION = 1;
+const DB_VERSION = 2; // v2 adds shipments + tickets
 
+let dbPromise = null;
+
+// One shared connection instead of a fresh one per call. If a newer
+// version of the app needs to upgrade the schema, we close ours so the
+// upgrade isn't blocked by a stale open tab.
 function openDB() {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
 
     req.onupgradeneeded = (event) => {
@@ -30,66 +38,65 @@ function openDB() {
       if (!db.objectStoreNames.contains("reference")) {
         db.createObjectStore("reference", { keyPath: "key" });
       }
+      if (!db.objectStoreNames.contains("shipments")) {
+        db.createObjectStore("shipments", { keyPath: "localId", autoIncrement: true });
+      }
+      if (!db.objectStoreNames.contains("tickets")) {
+        db.createObjectStore("tickets", { keyPath: "localId", autoIncrement: true });
+      }
     };
 
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      resolve(db);
+    };
+    req.onerror = () => {
+      dbPromise = null;
+      reject(req.error);
+    };
+    req.onblocked = () => {
+      console.warn("Database upgrade is waiting on another open tab of this app — close other tabs.");
+    };
   });
+  return dbPromise;
 }
 
-// --- Pending loads (the sync queue) ---
+// --- Small generic helpers for the queue-style stores ---
 
-export async function queueLoad(load) {
+async function addRecord(storeName, record) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction("pending_loads", "readwrite");
-    const record = {
-      ...load,
-      synced: false,
-      queuedAt: new Date().toISOString(),
-      // A device-stable client id lets Supabase de-dupe if the same
-      // record gets POSTed twice (e.g. sync succeeded but the response
-      // never made it back before connectivity dropped again).
-      clientId: crypto.randomUUID(),
-    };
-    const req = tx.objectStore("pending_loads").add(record);
+    const tx = db.transaction(storeName, "readwrite");
+    const req = tx.objectStore(storeName).add(record);
     req.onsuccess = () => resolve({ ...record, localId: req.result });
     req.onerror = () => reject(req.error);
   });
 }
 
-export async function getPendingLoads() {
+async function allRecords(storeName) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction("pending_loads", "readonly");
-    const req = tx.objectStore("pending_loads").getAll();
-    req.onsuccess = () => resolve(req.result.filter((r) => !r.synced));
-    req.onerror = () => reject(req.error);
-  });
-}
-
-export async function getAllLoads() {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction("pending_loads", "readonly");
-    const req = tx.objectStore("pending_loads").getAll();
+    const tx = db.transaction(storeName, "readonly");
+    const req = tx.objectStore(storeName).getAll();
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
 
-export async function markSynced(localId) {
+async function patchRecord(storeName, localId, patch) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction("pending_loads", "readwrite");
-    const store = tx.objectStore("pending_loads");
+    const tx = db.transaction(storeName, "readwrite");
+    const store = tx.objectStore(storeName);
     const getReq = store.get(localId);
     getReq.onsuccess = () => {
       const record = getReq.result;
       if (!record) return resolve();
-      record.synced = true;
-      record.syncedAt = new Date().toISOString();
-      const putReq = store.put(record);
+      const putReq = store.put({ ...record, ...patch });
       putReq.onsuccess = () => resolve();
       putReq.onerror = () => reject(putReq.error);
     };
@@ -97,12 +104,97 @@ export async function markSynced(localId) {
   });
 }
 
-export async function pendingCount() {
-  const loads = await getPendingLoads();
-  return loads.length;
+// --- Pending loads (field deliveries) ---
+
+export async function queueLoad(load) {
+  return addRecord("pending_loads", {
+    ...load,
+    synced: false,
+    queuedAt: new Date().toISOString(),
+    // A device-stable client id lets Supabase de-dupe if the same
+    // record gets POSTed twice (e.g. sync succeeded but the response
+    // never made it back before connectivity dropped again).
+    clientId: crypto.randomUUID(),
+  });
 }
 
-// --- Reference data cache (fields, bins, affidavit status) ---
+export async function getPendingLoads() {
+  return (await allRecords("pending_loads")).filter((r) => !r.synced);
+}
+
+export async function getAllLoads() {
+  return allRecords("pending_loads");
+}
+
+export async function markSynced(localId) {
+  return patchRecord("pending_loads", localId, { synced: true, syncedAt: new Date().toISOString() });
+}
+
+// --- Outbound hauls ---
+
+export async function queueShipment(shipment) {
+  return addRecord("shipments", {
+    ...shipment,
+    synced: false,
+    departedAt: new Date().toISOString(),
+    clientId: crypto.randomUUID(),
+  });
+}
+
+export async function getAllShipments() {
+  return allRecords("shipments");
+}
+
+export async function getPendingShipments() {
+  return (await allRecords("shipments")).filter((r) => !r.synced);
+}
+
+export async function markShipmentSynced(localId) {
+  return patchRecord("shipments", localId, { synced: true, syncedAt: new Date().toISOString() });
+}
+
+// --- Scale tickets (append-only; a correction is just a newer row) ---
+
+export async function queueTicket(ticket) {
+  const clientId = crypto.randomUUID();
+  return addRecord("tickets", {
+    ...ticket,
+    clientId,
+    createdAt: new Date().toISOString(),
+    synced: false,
+    // Where the photo will live in the storage bucket. A new photo gets its
+    // own path; a correction without one keeps pointing at the earlier photo.
+    photoPath: ticket.photo ? `${ticket.shipmentClientId}/${clientId}.jpg` : ticket.photoPath ?? null,
+    photoUploaded: false,
+  });
+}
+
+export async function getAllTickets() {
+  return allRecords("tickets");
+}
+
+// A ticket is pending if its data row hasn't synced OR its photo hasn't
+// uploaded yet — the two retry independently.
+export async function getPendingTickets() {
+  return (await allRecords("tickets")).filter((t) => !t.synced || (t.photo && !t.photoUploaded));
+}
+
+export async function markTicketSynced(localId) {
+  return patchRecord("tickets", localId, { synced: true, syncedAt: new Date().toISOString() });
+}
+
+export async function markTicketPhotoUploaded(localId) {
+  // Drop the Blob once it's safely uploaded so it doesn't sit in storage.
+  return patchRecord("tickets", localId, { photoUploaded: true, photo: null });
+}
+
+// Everything still waiting to reach Supabase — drives the "N queued" badge.
+export async function pendingCount() {
+  const [loads, ships, tickets] = await Promise.all([getPendingLoads(), getPendingShipments(), getPendingTickets()]);
+  return loads.length + ships.length + tickets.length;
+}
+
+// --- Reference data cache (fields, bins, workers, destinations, ...) ---
 
 export async function cacheReference(key, data) {
   const db = await openDB();

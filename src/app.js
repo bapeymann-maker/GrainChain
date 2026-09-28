@@ -150,7 +150,13 @@ function setState(patch) {
 
 async function refreshReference() {
   const [fields, bins, workers] = await Promise.all([getReference("fields"), getReference("bins"), getReference("workers")]);
-  setState({ fields: fields || [], bins: bins || [], workers: workers || [] });
+  const patch = { fields: fields || [], bins: bins || [], workers: workers || [] };
+  // Background syncs refresh this every ~30s. If someone is mid-typing,
+  // update the data quietly instead of re-drawing the screen — a redraw
+  // would drop keyboard focus.
+  const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement && document.activeElement.tagName);
+  if (typing) Object.assign(state, patch);
+  else setState(patch);
 }
 
 async function refreshTodayLog() {

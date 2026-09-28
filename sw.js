@@ -4,13 +4,20 @@
 // by db.js/sync.js via IndexedDB — this service worker is only responsible
 // for making sure the app itself always loads.
 
-const CACHE_NAME = "kiosk-shell-v14";
+const CACHE_NAME = "kiosk-shell-v17";
 const SHELL_FILES = [
   "/index.html",
   "/manifest.json",
   "/src/db.js",
   "/src/sync.js",
   "/src/app.js",
+  "/src/haul.js",
+  // Standalone Deliveries page (drivers' phones)
+  "/deliveries.html",
+  "/manifest-deliveries.json",
+  "/src/deliveries.js",
+  "/src/ui.js",
+  "/src/config.js",
 ];
 
 self.addEventListener("install", (event) => {
