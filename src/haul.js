@@ -19,6 +19,7 @@ const CROPS = ["Corn", "Soybeans", "Oats"];
 const STANDARD_LB_PER_BU = { Corn: 56, Soybeans: 60, Oats: 32 };
 const HAUL_WINDOW_MS = 4 * 24 * 60 * 60 * 1000; // matches recent_shipments view
 
+const TRUCK_NUMBERS = ["1", "2", "3", "4", "5", "6", "7", "8"]; // tractor / truck numbers
 const normCrop = (c) => (c === "Beans" ? "Soybeans" : c || null);
 const num = (v) => (v === "" || v == null || isNaN(Number(v)) ? null : Number(v));
 const round2 = (n) => Math.round(n * 100) / 100;
@@ -46,7 +47,11 @@ export function createHaul(ctx) {
   // What the driver has picked so far for a new haul. Persists between
   // hauls so the last trailer/bin/destination come up pre-highlighted.
   const haul = {
+    truck: null,
     trailer: null,
+    destCustom: false, // true when the driver typed a destination that isn't in the list
+    destName: "",
+    destLocation: "",
     origin: null, // "bin" | "field" — null until the driver has chosen once
     binId: null,
     site: null,
@@ -122,6 +127,28 @@ export function createHaul(ctx) {
     if (!d) return id || "—";
     return d.location ? `${d.name} (${d.location.split(",")[0]})` : d.name;
   };
+  // A destination as text: a typed-in one, or a listed one looked up by id.
+  const destText = (x) => {
+    if (x.destination_name) {
+      const town = (x.destination_location || "").split(",")[0].trim();
+      return town ? `${x.destination_name} (${town})` : x.destination_name;
+    }
+    return destLabel(x.destination_id);
+  };
+  const rigLabel = (x) => (x.truck ? `Truck ${x.truck} · ${x.trailer}` : x.trailer);
+  // Places drivers typed in the last few days, so the next driver can tap
+  // one instead of re-typing it (keeps the spelling consistent).
+  function recentCustomDestinations() {
+    const seen = new Map();
+    const push = (name, location, at) => {
+      if (!name) return;
+      const key = `${name}|${location || ""}`.toLowerCase();
+      if (!seen.has(key) || seen.get(key).at < at) seen.set(key, { name, location: location || "", at });
+    };
+    (state.recentShipments || []).forEach((s) => push(s.destination_name, s.destination_location, s.departed_at));
+    local.shipments.forEach((s) => push(s.destinationName, s.destinationLocation, s.departedAt));
+    return [...seen.values()].sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, 6);
+  }
   const workerName = (id) => (state.workers.find((w) => w.id === id) || {}).name || id || "—";
   const eligibleBins = () =>
     state.bins.filter((b) => (b.bin_type === "storage" || b.bin_type === "wet") && b.active !== false);
@@ -138,6 +165,7 @@ export function createHaul(ctx) {
         client_id: s.clientId,
         departed_at: s.departedAt,
         worker_id: s.workerId,
+        truck: s.truck,
         trailer: s.trailer,
         bin_id: s.binId,
         field_id: s.fieldId,
@@ -146,6 +174,8 @@ export function createHaul(ctx) {
         crop: s.crop,
         bin_status: s.binStatus,
         destination_id: s.destinationId,
+        destination_name: s.destinationName,
+        destination_location: s.destinationLocation,
         est_bushels: s.estBushels,
         est_weight_lb: s.estWeightLb,
         unsynced: !s.synced,
@@ -184,24 +214,46 @@ export function createHaul(ctx) {
   // ---------- 1. Trailer ----------
   function trailerScreen() {
     const wrap = col();
-    add(wrap, title("Which trailer?"), hint("You're taking grain out to a buyer."));
-    const grid = h("div", { style: "display:grid;grid-template-columns:repeat(4,1fr);gap:8px;" });
-    TRUCKS.forEach((t) =>
-      grid.appendChild(
-        h(
-          "button",
-          {
-            style: `${choiceStyle(haul.trailer === t)}text-align:center;font-size:16px;font-weight:700;padding:16px 8px;`,
-            onclick: () => {
-              haul.trailer = t;
-              setState({ screen: "haulOrigin" });
+    add(wrap, title("Truck and trailer"), hint("Pick your truck number and the trailer you're pulling."));
+    const grid = (values, current, pick) => {
+      const g = h("div", { style: "display:grid;grid-template-columns:repeat(4,1fr);gap:8px;" });
+      values.forEach((v) =>
+        g.appendChild(
+          h(
+            "button",
+            {
+              style: `${choiceStyle(current === v)}text-align:center;font-size:16px;font-weight:700;padding:14px 8px;`,
+              onclick: () => {
+                pick(v);
+                haul.error = "";
+                rerender();
+              },
             },
-          },
-          t
+            v
+          )
         )
-      )
+      );
+      return g;
+    };
+    add(wrap, label("Truck #"), grid(TRUCK_NUMBERS, haul.truck, (v) => (haul.truck = v)));
+    add(wrap, label("Trailer"), grid(TRUCKS, haul.trailer, (v) => (haul.trailer = v)));
+    add(wrap, errorLine(haul.error));
+    add(
+      wrap,
+      bigButton("Next", {
+        tone: "gold",
+        onClick: () => {
+          if (!haul.truck || !haul.trailer) {
+            haul.error = "Pick both a truck number and a trailer.";
+            rerender();
+            return;
+          }
+          haul.error = "";
+          setState({ screen: "haulOrigin" });
+        },
+      })
     );
-    add(wrap, grid, linkButton("← Back", () => setState({ screen: "home" })));
+    add(wrap, linkButton("← Back", () => setState({ screen: "home" })));
     return wrap;
   }
 
@@ -423,6 +475,7 @@ export function createHaul(ctx) {
               style: choiceStyle(selected),
               onclick: () => {
                 haul.destId = d.id;
+                haul.destCustom = false;
                 haul.error = "";
                 setState({ screen: "haulConfirm" });
               },
@@ -439,7 +492,98 @@ export function createHaul(ctx) {
         );
       });
     }
+    add(
+      wrap,
+      h(
+        "button",
+        {
+          style: `${choiceStyle(haul.destCustom)}border-style:dashed;`,
+          onclick: () => {
+            haul.error = "";
+            setState({ screen: "haulDestNew" });
+          },
+        },
+        [
+          h("div", { style: "font-size:16px;font-weight:600;" }, "Somewhere new — type it in"),
+          h(
+            "div",
+            { style: `font-size:13px;font-weight:400;color:${haul.destCustom ? COLORS.gold : COLORS.textMuted};` },
+            haul.destCustom ? `Same as last haul: ${haul.destName}` : "A buyer or place that isn't in this list"
+          ),
+        ]
+      )
+    );
     add(wrap, linkButton("← Back", () => setState({ screen: haul.origin === "field" ? "haulField" : "haulBin" })));
+    return wrap;
+  }
+
+  // ---------- 3b. A destination we haven't delivered to before ----------
+  function destNewScreen() {
+    const wrap = col();
+    add(wrap, title("New destination"), hint("Type where you're taking it — the buyer's name and the town."));
+    const recent = recentCustomDestinations();
+    if (recent.length) {
+      add(wrap, label("Someone typed these recently — tap one to reuse it"));
+      add(
+        wrap,
+        h(
+          "div",
+          { style: "display:flex;gap:8px;flex-wrap:wrap;" },
+          recent.map((r) =>
+            h(
+              "button",
+              {
+                style: `${choiceStyle(false)}padding:10px 14px;font-size:14px;`,
+                onclick: () => {
+                  haul.destName = r.name;
+                  haul.destLocation = r.location;
+                  haul.error = "";
+                  rerender();
+                },
+              },
+              r.location ? `${r.name} (${r.location})` : r.name
+            )
+          )
+        )
+      );
+    }
+    const input = (text, key, placeholder) =>
+      h("div", { style: "display:flex;flex-direction:column;gap:6px;" }, [
+        label(text),
+        h("input", {
+          type: "text",
+          placeholder,
+          value: haul[key],
+          style: inputStyle,
+          oninput: (e) => {
+            haul[key] = e.target.value;
+            haul.error = "";
+          },
+        }),
+      ]);
+    add(wrap, input("Buyer or place name", "destName", "Buyer or place name"), input("Town, state (optional)", "destLocation", "City, ST"));
+    add(wrap, errorLine(haul.error));
+    add(
+      wrap,
+      bigButton("Use this destination", {
+        tone: "gold",
+        onClick: () => {
+          const name = haul.destName.replace(/\s+/g, " ").trim();
+          if (name.length < 2) {
+            haul.error = "Type the buyer's or place's name.";
+            rerender();
+            return;
+          }
+          haul.destName = name;
+          haul.destLocation = haul.destLocation.replace(/\s+/g, " ").trim();
+          haul.destCustom = true;
+          haul.destId = null;
+          haul.error = "";
+          setState({ screen: "haulConfirm" });
+        },
+      })
+    );
+    add(wrap, linkButton("← Back", () => setState({ screen: "haulDest" })));
     return wrap;
   }
 
@@ -450,7 +594,7 @@ export function createHaul(ctx) {
     const field = isField ? fieldById(haul.fieldId) : null;
     const originStatus = isField ? field && field.status : bin && bin.status;
     const wrap = col();
-    if (!haul.trailer || (!bin && !field) || !haul.destId) {
+    if (!haul.truck || !haul.trailer || (!bin && !field) || (!haul.destId && !haul.destCustom)) {
       add(wrap, emptyNote("Something's missing — start the haul again."), linkButton("← Home", () => setState({ screen: "home" })));
       return wrap;
     }
@@ -458,11 +602,12 @@ export function createHaul(ctx) {
 
     const rows = [
       ["Driver", state.worker.name],
+      ["Truck", `#${haul.truck}`],
       ["Trailer", haul.trailer],
       isField
         ? ["From field", `${field.name}${field.acres ? " · " + fmtNum(field.acres, 1) + " ac" : ""}`]
         : ["From bin", `${bin.name} (${bin.site})`],
-      ["Destination", destLabel(haul.destId)],
+      ["Destination", haul.destCustom ? destText({ destination_name: haul.destName, destination_location: haul.destLocation }) : destLabel(haul.destId)],
     ];
     const card = h("div", {
       style: `background:${COLORS.panelAlt};border:1px solid ${COLORS.border};border-radius:10px;padding:16px 18px;display:flex;flex-direction:column;gap:10px;`,
@@ -484,6 +629,9 @@ export function createHaul(ctx) {
       );
     }
     add(wrap, card);
+    if (haul.destCustom) {
+      add(wrap, h("div", { style: `font-size:12px;color:${COLORS.amber};margin-top:-6px;` }, "New destination — it isn't in the list yet, so it's saved exactly as you typed it."));
+    }
 
     add(wrap, label("Crop"));
     add(
@@ -586,6 +734,9 @@ export function createHaul(ctx) {
     const bin = isField ? null : binById(haul.binId);
     const field = isField ? fieldById(haul.fieldId) : null;
     const originName = isField ? `${field.name} (field)` : bin.name;
+    const destination = haul.destCustom
+      ? { destination_name: haul.destName, destination_location: haul.destLocation }
+      : { destination_id: haul.destId };
     let estBushels = null;
     let estWeightLb = null;
     if (haul.estMode === "full") {
@@ -604,6 +755,7 @@ export function createHaul(ctx) {
     try {
       await queueShipment({
         workerId: state.worker.id,
+        truck: haul.truck,
         trailer: haul.trailer,
         originType: isField ? "field" : "bin",
         binId: bin ? bin.id : null,
@@ -611,14 +763,16 @@ export function createHaul(ctx) {
         crop: haul.crop,
         binStatus: bin ? bin.status || null : null,
         originStatus: (isField ? field.status : bin.status) || null,
-        destinationId: haul.destId,
+        destinationId: haul.destCustom ? null : haul.destId,
+        destinationName: haul.destCustom ? haul.destName : null,
+        destinationLocation: haul.destCustom ? haul.destLocation || null : null,
         estBushels,
         estWeightLb,
       });
       await refreshLocal(true);
       haul.done = {
         title: "Haul started",
-        line: `${haul.trailer} · ${originName} → ${destLabel(haul.destId)}`,
+        line: `Truck ${haul.truck} · ${haul.trailer} · ${originName} → ${destText(destination)}`,
         note: "When you get your scale ticket, open “Scale tickets” on the home screen to enter the numbers and take a photo of it.",
       };
       haul.estMode = "full";
@@ -705,7 +859,7 @@ export function createHaul(ctx) {
           },
           [
             h("div", {}, [
-              h("div", { style: "font-size:15px;font-weight:600;" }, `${x.trailer} · ${originLabel(x)} → ${destLabel(x.destination_id)}`),
+              h("div", { style: "font-size:15px;font-weight:600;" }, `${rigLabel(x)} · ${originLabel(x)} → ${destText(x)}`),
               h(
                 "div",
                 { style: `font-size:12px;font-weight:400;color:${COLORS.textMuted};` },
@@ -780,7 +934,7 @@ export function createHaul(ctx) {
     add(
       wrap,
       h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-top:-8px;` }, [
-        h("div", { style: `color:${COLORS.text};font-weight:600;` }, `${x.trailer} · ${originLabel(x)} → ${destLabel(x.destination_id)}`),
+        h("div", { style: `color:${COLORS.text};font-weight:600;` }, `${rigLabel(x)} · ${originLabel(x)} → ${destText(x)}`),
         h("div", {}, `${normCrop(x.crop) || ""} · left ${fmtTime(x.departed_at)}`),
       ])
     );
@@ -934,6 +1088,7 @@ export function createHaul(ctx) {
       haulField: fieldScreen,
       haulBin: binScreen,
       haulDest: destScreen,
+      haulDestNew: destNewScreen,
       haulConfirm: confirmScreen,
       haulDone: doneScreen,
       haulList: listScreen,

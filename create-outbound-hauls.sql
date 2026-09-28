@@ -43,6 +43,14 @@ alter table shipments add column if not exists origin_type text not null default
 alter table shipments add column if not exists field_id text references fields(id);
 alter table shipments add column if not exists origin_status text;   -- organic / transitional / conventional, of the bin or field at departure
 
+-- Truck (tractor) number, separate from the trailer (U1-U8).
+alter table shipments add column if not exists truck text;
+-- A destination the driver typed because it isn't in the destinations list
+-- yet (destination_id stays empty for these). To make one a permanent choice,
+-- add it to the destinations table.
+alter table shipments add column if not exists destination_name text;
+alter table shipments add column if not exists destination_location text;
+
 -- ---------------------------------------------------------------
 -- Scale ticket data. APPEND-ONLY: fixing a typo adds a new row and the
 -- newest one wins, so every earlier entry stays on file for audit.
@@ -105,7 +113,8 @@ select
   t.ticket_number, t.gross_lb, t.tare_lb, t.net_lb, t.net_bushels,
   t.moisture_pct, t.test_weight, t.photo_path, t.notes,
   t.created_at as ticket_at,
-  s.field_id, s.origin_type, s.origin_status
+  s.field_id, s.origin_type, s.origin_status,
+  s.truck, s.destination_name, s.destination_location
 from shipments s
 left join lateral (
   select * from shipment_tickets st
