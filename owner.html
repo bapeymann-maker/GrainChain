@@ -12,6 +12,8 @@
       --transitional: #B08F5A; --transitional-dark: #2F2717;
       --conventional: #6B7480; --conventional-dark: #20242A;
       --danger: #C0453A;
+      --driver-blue: #5AA9E6; --driver-blue-dark: #12283A;
+      --ai-yellow: #E8C547; --ai-yellow-dark: #332C0C;
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; background: var(--ink); color: var(--text); min-height: 100%; }
@@ -45,6 +47,17 @@
     .badge-review { color: #E2812B; background: #3A250D; }
     .badge-none { color: var(--text-muted); background: var(--panel-alt); }
     .photo-link { color: var(--gold); font-size: 12px; text-decoration: underline; background: none; border: none; cursor: pointer; padding: 0; }
+    .driver-val { color: var(--driver-blue); }
+    .ai-val { color: var(--ai-yellow); }
+    .haul-row { cursor: pointer; }
+    .haul-row:hover { background: var(--panel); }
+    .haul-detail-cell { background: var(--panel); padding: 16px 20px !important; white-space: normal; }
+    .detail-cols { display: grid; grid-template-columns: 160px 1fr 1fr; gap: 4px 16px; font-size: 13px; align-items: baseline; }
+    .detail-cols .dh { color: var(--text-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; padding-bottom: 4px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+    .detail-cols .lbl { color: var(--text-muted); }
+    .detail-cols .empty { color: var(--border); }
+    .legend-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
+    .legend-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
     #table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
     #status-line { color: var(--text-muted); font-size: 13px; margin-bottom: 10px; }
     #filter-row { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -144,8 +157,8 @@
 
     // TODO: same Project URL / anon key as index.html.
     const supabase = createClient(
-      "https://ewzlxjimbxwurzbjzbxw.supabase.co",
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3emx4amltYnh3dXJ6Ymp6Ynh3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3NDA4NDksImV4cCI6MjEwNTMxNjg0OX0.wJTPNqDP07_129K_90X-SOb4oji8ZENWi4S9L0xjGQk"
+      "https://YOUR-PROJECT.supabase.co",
+      "YOUR-ANON-KEY"
     );
 
     const loginView = document.getElementById("login-view");
@@ -172,6 +185,48 @@
     let haulsLoaded = false;
     let haulSortKey = "departed_at";
     let haulSortDir = "desc";
+    const expandedHauls = new Set();
+
+    // Every field either side can capture. `d` reads from the driver's
+    // ticket row, `a` from the AI's reading of the photo — both optional,
+    // since most fields only exist on one side. Grouped for readability.
+    const DETAIL_FIELDS = [
+      { group: "Ticket" },
+      { label: "Ticket number", d: (t) => t.ticket_number, a: (r) => (r.ticket_number ? r.ticket_number + (r.ticket_number_complete === false ? " (partial — covered/cut off)" : "") : null) },
+      { label: "Buyer", a: (r) => [r.buyer_name, r.buyer_location].filter(Boolean).join(" — ") },
+      { label: "Ticket date", a: (r) => r.ticket_date },
+      { label: "Commodity", a: (r) => r.commodity },
+      { group: "Weight" },
+      { label: "Gross (lb)", d: (t) => t.gross_lb, a: (r) => r.gross_lb },
+      { label: "Tare (lb)", d: (t) => t.tare_lb, a: (r) => r.tare_lb },
+      { label: "Net (lb)", d: (t) => t.net_lb, a: (r) => r.net_lb },
+      { label: "Gross time", a: (r) => r.gross_time },
+      { label: "Tare time", a: (r) => r.tare_time },
+      { group: "Bushels" },
+      { label: "Gross (bu)", a: (r) => r.gross_bu },
+      { label: "Shrink (bu)", a: (r) => r.shrink_bu },
+      { label: "Net (bu)", d: (t) => t.net_bushels, a: (r) => r.net_bu },
+      { group: "Grading" },
+      { label: "Moisture %", d: (t) => t.moisture_pct, a: (r) => r.moisture_pct },
+      { label: "Test weight", d: (t) => t.test_weight, a: (r) => r.test_weight },
+      { label: "Foreign material %", a: (r) => r.foreign_material_pct },
+      { label: "Damage %", a: (r) => r.damage_pct },
+      { label: "Heat damage %", a: (r) => r.heat_damage_pct },
+      { group: "Other" },
+      { label: "Vehicle ID (printed)", a: (r) => r.vehicle_id_printed },
+      { label: "BOL", a: (r) => r.bol },
+      {
+        label: "Owner splits",
+        a: (r) => (Array.isArray(r.owner_splits) && r.owner_splits.length ? r.owner_splits.map((o) => `${o.name}: ${o.pct != null ? o.pct + "%" : ""} ${o.net_lb != null ? "— " + o.net_lb.toLocaleString() + " lb" : ""} ${o.net_bu != null ? "/ " + o.net_bu + " bu" : ""}`).join("; ") : null),
+      },
+      { label: "Driver's notes", d: (t) => t.notes },
+      { label: "Handwritten on ticket", a: (r) => r.handwritten_notes },
+      { group: "AI read" },
+      { label: "Legibility issues", a: (r) => (Array.isArray(r.legibility_issues) && r.legibility_issues.length ? r.legibility_issues.join("; ") : null) },
+      { label: "Arithmetic check", a: (r) => r.arithmetic_check },
+      { label: "Cleaning affidavit", a: (r) => (r.cleaning_affidavit ? `${r.cleaning_affidavit.present ? "Present" : "Not shown"}${r.cleaning_affidavit.signed ? ", signed" : ""}${r.cleaning_affidavit.date_filled ? " " + r.cleaning_affidavit.date_filled : ""}` : null) },
+      { label: "Read at", a: (r) => (r.read_at ? new Date(r.read_at).toLocaleString() : null) },
+    ];
     let sortKey = "logged_at";
     let sortDir = "desc";
     let viewMode = "loads"; // "loads" | "field"
@@ -472,25 +527,29 @@
         else if (ticket && read?.error) { checkStatus = "review"; checkLabel = "AI read failed"; }
         else if (ticket && read) {
           const netClose = read.net_lb == null || ticket.net_lb == null || Math.abs(read.net_lb - ticket.net_lb) <= Math.max(50, ticket.net_lb * 0.01);
-          const buClose = read.net_bu == null || ticket.net_bu == null || Math.abs(read.net_bu - ticket.net_bu) <= Math.max(1, ticket.net_bu * 0.01);
+          const buClose = read.net_bu == null || ticket.net_bushels == null || Math.abs(read.net_bu - ticket.net_bushels) <= Math.max(1, ticket.net_bushels * 0.01);
           if (read.needs_review || !netClose || !buClose) { checkStatus = "review"; checkLabel = "Needs review"; }
           else { checkStatus = "match"; checkLabel = "Matches driver entry"; }
         }
 
         return {
+          haulId: s.client_id,
           departed_at: s.departed_at,
           driver: s.workers?.name || s.worker_id,
           origin, originStatus: s.origin_status,
           destination: destLoc ? `${destination} (${destLoc})` : destination,
           rig: s.truck ? `Truck ${s.truck} · ${s.trailer}` : s.trailer,
           ticketNumber: ticket?.ticket_number || "—",
-          driverNet: ticket ? `${ticket.net_lb != null ? ticket.net_lb.toLocaleString() + " lb" : "—"} / ${ticket.net_bu != null ? ticket.net_bu.toLocaleString() + " bu" : "—"}` : "—",
+          driverNet: ticket ? `${ticket.net_lb != null ? ticket.net_lb.toLocaleString() + " lb" : "—"} / ${ticket.net_bushels != null ? ticket.net_bushels.toLocaleString() + " bu" : "—"}` : "—",
           aiNet: read && !read.error ? `${read.net_lb != null ? read.net_lb.toLocaleString() + " lb" : "—"} / ${read.net_bu != null ? read.net_bu.toLocaleString() + " bu" : "—"}` : read?.error ? "Read failed" : "—",
           aiTicketNumber: read?.ticket_number || null,
           aiTicketComplete: read?.ticket_number_complete,
           checkStatus, checkLabel,
           arithmeticCheck: read?.arithmetic_check || null,
           photoPath: ticket?.photo_path || null,
+          // Full raw records, for the expanded field-by-field detail panel.
+          _ticket: ticket,
+          _read: read,
         };
       });
       haulsLoaded = true;
@@ -503,6 +562,67 @@
       if (error) { btn.textContent = "Could not load photo"; return; }
       window.open(data.signedUrl, "_blank", "noopener");
       btn.textContent = "View photo";
+    }
+
+    function fmtVal(v) {
+      if (v == null || v === "") return null;
+      return typeof v === "number" ? v.toLocaleString() : String(v);
+    }
+
+    function buildDetailPanel(r) {
+      const t = r._ticket || {};
+      const read = r._read || {};
+      const wrap = document.createElement("div");
+      wrap.innerHTML = `
+        <div style="display:flex;gap:16px;margin-bottom:10px;">
+          <span class="legend-chip"><span class="legend-dot" style="background:var(--driver-blue);"></span>Driver entered</span>
+          <span class="legend-chip"><span class="legend-dot" style="background:var(--ai-yellow);"></span>AI read from photo</span>
+        </div>
+      `;
+      const grid = document.createElement("div");
+      grid.className = "detail-cols";
+      grid.innerHTML = `<div class="dh">Field</div><div class="dh">Driver</div><div class="dh">AI reading</div>`;
+
+      DETAIL_FIELDS.forEach((f) => {
+        if (f.group) {
+          const g = document.createElement("div");
+          g.className = "dh";
+          g.style.gridColumn = "1 / -1";
+          g.style.marginTop = "6px";
+          g.textContent = f.group;
+          grid.appendChild(g);
+          return;
+        }
+        const dv = f.d ? fmtVal(f.d(t)) : null;
+        const av = f.a ? fmtVal(f.a(read)) : null;
+        if (dv == null && av == null) return; // nothing either side captured — skip the row
+        const lbl = document.createElement("div");
+        lbl.className = "lbl";
+        lbl.textContent = f.label;
+        const dCell = document.createElement("div");
+        dCell.className = dv != null ? "driver-val" : "empty";
+        dCell.textContent = dv != null ? dv : "—";
+        const aCell = document.createElement("div");
+        aCell.className = av != null ? "ai-val" : "empty";
+        aCell.textContent = av != null ? av : "—";
+        grid.appendChild(lbl);
+        grid.appendChild(dCell);
+        grid.appendChild(aCell);
+      });
+      wrap.appendChild(grid);
+
+      if (r.photoPath) {
+        const btn = document.createElement("button");
+        btn.className = "photo-link";
+        btn.style.marginTop = "12px";
+        btn.textContent = "View photo";
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          showPhoto(r.photoPath, btn);
+        });
+        wrap.appendChild(btn);
+      }
+      return wrap;
     }
 
     function renderHaulsTable() {
@@ -523,27 +643,48 @@
       haulsRowsEl.innerHTML = "";
       rows.forEach((r) => {
         const tr = document.createElement("tr");
+        tr.className = "haul-row";
+        const expanded = expandedHauls.has(r.haulId);
         const time = r.departed_at ? new Date(r.departed_at).toLocaleString() : "—";
         const checkBadge = `<span class="badge badge-${r.checkStatus}">${escapeHtml(r.checkLabel)}</span>`;
         const ticketMismatch = r.aiTicketNumber && r.ticketNumber !== "—" && r.aiTicketNumber !== r.ticketNumber && r.aiTicketComplete !== false;
         const aiNetCell = ticketMismatch ? `${escapeHtml(r.aiNet)} <span title="AI read ticket #${escapeHtml(r.aiTicketNumber)}, driver entered ${escapeHtml(r.ticketNumber)}" style="color:var(--danger);">⚠</span>` : escapeHtml(r.aiNet);
         tr.innerHTML = `
-          <td>${time}</td>
+          <td>${expanded ? "▾" : "▸"} ${time}</td>
           <td>${escapeHtml(r.driver)}</td>
           <td>${escapeHtml(r.origin)}</td>
           <td>${escapeHtml(r.destination)}</td>
           <td>${escapeHtml(r.rig)}</td>
           <td>${escapeHtml(r.ticketNumber)}</td>
-          <td>${escapeHtml(r.driverNet)}</td>
-          <td>${aiNetCell}</td>
+          <td class="driver-val">${escapeHtml(r.driverNet)}</td>
+          <td class="ai-val">${aiNetCell}</td>
           <td>${checkBadge}</td>
           <td>${r.photoPath ? `<button class="photo-link" data-path="${escapeHtml(r.photoPath)}">View photo</button>` : "—"}</td>
         `;
         if (r.arithmeticCheck && r.arithmeticCheck.startsWith("fail")) tr.title = r.arithmeticCheck;
+        tr.addEventListener("click", (e) => {
+          if (e.target.closest(".photo-link")) return; // let the photo button's own handler run instead
+          if (expandedHauls.has(r.haulId)) expandedHauls.delete(r.haulId);
+          else expandedHauls.add(r.haulId);
+          renderHaulsTable();
+        });
         haulsRowsEl.appendChild(tr);
+
+        if (expanded) {
+          const detailTr = document.createElement("tr");
+          const td = document.createElement("td");
+          td.colSpan = 10;
+          td.className = "haul-detail-cell";
+          td.appendChild(buildDetailPanel(r));
+          detailTr.appendChild(td);
+          haulsRowsEl.appendChild(detailTr);
+        }
       });
-      haulsRowsEl.querySelectorAll(".photo-link").forEach((btn) => {
-        btn.addEventListener("click", () => showPhoto(btn.dataset.path, btn));
+      haulsRowsEl.querySelectorAll(".photo-link[data-path]").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          showPhoto(btn.dataset.path, btn);
+        });
       });
     }
 
