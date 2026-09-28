@@ -14,9 +14,6 @@ import { queueShipment, queueTicket, getAllShipments, getAllTickets } from "./db
 import { syncSoon } from "./sync.js";
 
 const CROPS = ["Corn", "Soybeans", "Oats"];
-// Standard commercial bushel weights. Used only to pre-fill net bushels;
-// the ticket's own bushel figure always wins if entered.
-const STANDARD_LB_PER_BU = { Corn: 56, Soybeans: 60, Oats: 32 };
 const HAUL_WINDOW_MS = 4 * 24 * 60 * 60 * 1000; // matches recent_shipments view
 
 const TRUCK_NUMBERS = ["1", "2", "3", "4", "5", "6", "7", "8"]; // tractor / truck numbers
@@ -957,10 +954,18 @@ export function createHaul(ctx) {
     };
     const row = (...kids) => h("div", { style: "display:flex;gap:10px;" }, kids);
 
-    add(wrap, row(field("Ticket number", "number", { numeric: false })));
+    add(wrap, row(field("Ticket number *", "number", { numeric: false })));
+    add(wrap, row(field("Net bushels *", "bushels")));
+    add(
+      wrap,
+      h(
+        "div",
+        { style: `font-size:12px;color:${COLORS.textMuted};margin-top:-6px;` },
+        "Type the ticket's own Net bushels — for wet grain this is already after moisture shrink, so it won't match weight ÷ 56."
+      )
+    );
     add(wrap, row(field("Gross weight (lb)", "gross"), field("Tare weight (lb)", "tare")));
     add(wrap, row(field("Net weight (lb)", "net", { placeholder: "gross − tare" })));
-    add(wrap, row(field("Net bushels", "bushels", { placeholder: "auto if blank" })));
     add(wrap, row(field("Moisture %", "moisture"), field("Test weight (lb/bu)", "testWeight")));
     add(wrap, row(field("Notes (optional)", "notes", { numeric: false })));
     add(
@@ -968,11 +973,11 @@ export function createHaul(ctx) {
       h(
         "div",
         { style: `font-size:12px;color:${COLORS.textMuted};margin-top:-6px;` },
-        "Net weight is filled in from gross − tare if you leave it blank. Net bushels is calculated at standard bushel weight (not adjusted for moisture) if left blank — type the ticket's own bushel figure to override."
+        "Everything below Net bushels is optional — fill in what's easy to read off the ticket."
       )
     );
 
-    // Photo
+    // Photo (required)
     const fileInput = h("input", {
       type: "file",
       accept: "image/*",
@@ -984,13 +989,15 @@ export function createHaul(ctx) {
       },
     });
     add(wrap, fileInput);
+    add(wrap, label("Photo of the ticket *"));
     add(
       wrap,
       bigButton(
         ticket.photoBusy ? "Processing photo…" : ticket.photoUrl ? "Retake photo" : ticket.hadPhoto ? "Replace photo" : "Take photo of ticket",
         {
+          tone: ticket.photoUrl || ticket.hadPhoto ? "default" : "gold",
           disabled: ticket.photoBusy,
-          sub: ticket.photoUrl ? "Photo attached — saves with the ticket" : ticket.hadPhoto ? "A photo is already on file for this haul" : "Optional, but recommended",
+          sub: ticket.photoUrl ? "Photo attached — saves with the ticket" : ticket.hadPhoto ? "Already on file — tap to replace it" : "Required",
           onClick: () => fileInput.click(),
         }
       )
@@ -1015,26 +1022,28 @@ export function createHaul(ctx) {
   async function saveTicket() {
     if (ticket.saving || ticket.photoBusy) return;
     const x = ticket.shipment;
+
+    if (!ticket.number.trim()) {
+      ticket.error = "Enter the ticket number.";
+      rerender();
+      return;
+    }
+    const bushels = num(ticket.bushels);
+    if (!(bushels > 0)) {
+      ticket.error = "Enter the net bushels from the ticket.";
+      rerender();
+      return;
+    }
+    if (!ticket.photo && !ticket.hadPhoto) {
+      ticket.error = "Take a photo of the ticket.";
+      rerender();
+      return;
+    }
+
     const gross = num(ticket.gross);
     const tare = num(ticket.tare);
     let net = num(ticket.net);
     if (net == null && gross != null && tare != null) net = gross - tare;
-    if (!(net > 0)) {
-      ticket.error = "Enter the net weight — or gross and tare so it can be worked out.";
-      rerender();
-      return;
-    }
-    const crop = normCrop(x.crop);
-    let bushels = num(ticket.bushels);
-    const moisture = num(ticket.moisture);
-    if (bushels == null && moisture != null && moisture >= 20) {
-      // Wet grain: the buyer's net bushels are AFTER moisture shrink, so
-      // weight ÷ 56 would overstate the load by a quarter or more.
-      ticket.error = `This load is wet (${moisture}% moisture). The buyer's net bushels are after shrink — type the ticket's Net bushels instead of leaving it blank.`;
-      rerender();
-      return;
-    }
-    if (bushels == null) bushels = net / (STANDARD_LB_PER_BU[crop] || 56);
 
     ticket.saving = true;
     try {
@@ -1044,7 +1053,7 @@ export function createHaul(ctx) {
         ticketNumber: ticket.number.trim(),
         grossLb: gross,
         tareLb: tare,
-        netLb: round2(net),
+        netLb: net != null ? round2(net) : null,
         netBushels: round2(bushels),
         moisturePct: num(ticket.moisture),
         testWeight: num(ticket.testWeight),
