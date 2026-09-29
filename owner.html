@@ -58,6 +58,25 @@
     .detail-cols .empty { color: var(--border); }
     .legend-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
     .legend-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+    .entry-form { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+    .entry-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
+    .entry-form input, .entry-form select, .entry-form textarea {
+      font-size: 13px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--panel); color: var(--text); font-family: inherit;
+    }
+    .item-card { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; }
+    .item-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; cursor: pointer; }
+    .item-card .meta { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+    .progress-track { background: var(--panel); border-radius: 999px; height: 8px; width: 160px; overflow: hidden; margin-top: 6px; }
+    .progress-fill { background: var(--gold); height: 100%; }
+    .item-detail { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }
+    .ticket-pick-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
+    .ticket-pick-row:last-child { border-bottom: none; }
+    .small-btn { font-size: 12px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
+    .small-btn.gold { border-color: var(--gold); background: var(--gold-dark); color: var(--gold); }
+    .badge-paid { color: var(--organic); background: var(--organic-dark); }
+    .badge-unpaid { color: #E2812B; background: #3A250D; }
     #table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
     #status-line { color: var(--text-muted); font-size: 13px; margin-bottom: 10px; }
     #filter-row { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -97,6 +116,8 @@
       <button id="view-loads-btn" class="view-btn active-view">All Loads</button>
       <button id="view-field-btn" class="view-btn">By Field</button>
       <button id="view-hauls-btn" class="view-btn">Hauls &amp; Tickets</button>
+      <button id="view-contracts-btn" class="view-btn">Contracts</button>
+      <button id="view-settlements-btn" class="view-btn">Settlements</button>
       <button id="refresh-btn" style="border:1px solid var(--border);background:var(--panel-alt);color:var(--text);border-radius:8px;padding:8px 14px;cursor:pointer;">Refresh</button>
     </div>
     <div id="status-line">Loading…</div>
@@ -149,6 +170,48 @@
         </thead>
         <tbody id="hauls-rows"></tbody>
       </table>
+
+      <div id="contracts-view" style="display:none;">
+        <button id="add-contract-btn" class="view-btn" style="margin-bottom:14px;">+ Add contract</button>
+        <div id="contract-form" class="entry-form" style="display:none;">
+          <div class="form-grid">
+            <label>Crop<select id="cf-crop"><option>Corn</option><option>Soybeans</option></select></label>
+            <label>Sale type<select id="cf-sale-type"><option value="organic">Organic</option><option value="conventional">Conventional</option><option value="non_gmo">Non-GMO</option></select></label>
+            <label>Bushels<input id="cf-bushels" type="number" step="any" /></label>
+            <label>Contract #<input id="cf-number" type="text" /></label>
+            <label>Buyer<select id="cf-destination"></select></label>
+            <label>Contract date<input id="cf-date" type="date" /></label>
+            <label>Delivery period<input id="cf-period" type="text" placeholder="e.g. Oct 2026" /></label>
+            <label>Futures price<input id="cf-futures" type="number" step="any" /></label>
+            <label>Basis<input id="cf-basis" type="number" step="any" /></label>
+            <label>Cash price<input id="cf-cash" type="number" step="any" /></label>
+          </div>
+          <label style="display:block;margin-top:10px;">Notes<textarea id="cf-notes" rows="2" style="width:100%;"></textarea></label>
+          <div style="margin-top:10px;display:flex;gap:8px;">
+            <button id="cf-save" class="view-btn active-view">Save contract</button>
+            <button id="cf-cancel" class="view-btn">Cancel</button>
+          </div>
+        </div>
+        <div id="contracts-list"></div>
+      </div>
+
+      <div id="settlements-view" style="display:none;">
+        <button id="add-settlement-btn" class="view-btn" style="margin-bottom:14px;">+ Upload settlement</button>
+        <div id="settlement-form" class="entry-form" style="display:none;">
+          <div class="form-grid">
+            <label>Buyer<select id="sf-destination"></select></label>
+            <label>Settlement date<input id="sf-date" type="date" /></label>
+            <label>Total amount ($)<input id="sf-amount" type="number" step="any" /></label>
+            <label>Document (photo or PDF)<input id="sf-file" type="file" accept="image/*,application/pdf" /></label>
+          </div>
+          <label style="display:block;margin-top:10px;">Notes<textarea id="sf-notes" rows="2" style="width:100%;"></textarea></label>
+          <div style="margin-top:10px;display:flex;gap:8px;">
+            <button id="sf-save" class="view-btn active-view">Save settlement</button>
+            <button id="sf-cancel" class="view-btn">Cancel</button>
+          </div>
+        </div>
+        <div id="settlements-list"></div>
+      </div>
     </div>
   </div>
 
@@ -176,6 +239,12 @@
     const viewHaulsBtn = document.getElementById("view-hauls-btn");
     const haulsTable = document.getElementById("hauls-table");
     const haulsRowsEl = document.getElementById("hauls-rows");
+    const viewContractsBtn = document.getElementById("view-contracts-btn");
+    const viewSettlementsBtn = document.getElementById("view-settlements-btn");
+    const contractsView = document.getElementById("contracts-view");
+    const settlementsView = document.getElementById("settlements-view");
+    const contractsListEl = document.getElementById("contracts-list");
+    const settlementsListEl = document.getElementById("settlements-list");
     const searchEl = document.getElementById("search");
     const statusFilterEl = document.getElementById("status-filter");
     const refreshBtn = document.getElementById("refresh-btn");
@@ -186,6 +255,26 @@
     let haulSortKey = "departed_at";
     let haulSortDir = "desc";
     const expandedHauls = new Set();
+
+    let allDestinations = [];
+    let allContracts = [];
+    let allSettlements = [];
+    let contractsLoaded = false, settlementsLoaded = false;
+    const expandedContracts = new Set();
+    const expandedSettlements = new Set();
+
+    // organic contract  <- organic-status hauls of that crop
+    // conventional      <- conventional OR transitional hauls of that crop
+    //                      (buffer grain is already conventional-status by
+    //                      the time it's a haul, so no separate case needed)
+    // non_gmo           <- transitional hauls of that crop
+    function eligibleForContract(haul, contract) {
+      if (haul.crop !== contract.crop) return false;
+      if (contract.sale_type === "organic") return haul.originStatus === "organic";
+      if (contract.sale_type === "conventional") return haul.originStatus === "conventional" || haul.originStatus === "transitional";
+      if (contract.sale_type === "non_gmo") return haul.originStatus === "transitional";
+      return false;
+    }
 
     // Every field either side can capture. `d` reads from the driver's
     // ticket row, `a` from the AI's reading of the photo — both optional,
@@ -276,37 +365,30 @@
     searchEl.addEventListener("input", render);
     statusFilterEl.addEventListener("change", render);
 
-    viewLoadsBtn.addEventListener("click", () => {
-      viewMode = "loads";
-      viewLoadsBtn.classList.add("active-view");
-      viewFieldBtn.classList.remove("active-view");
-      viewHaulsBtn.classList.remove("active-view");
-      loadsTable.style.display = "";
-      fieldTable.style.display = "none";
-      haulsTable.style.display = "none";
+    const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn };
+    const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView };
+
+    async function switchView(mode) {
+      viewMode = mode;
+      Object.entries(VIEW_BTNS).forEach(([k, btn]) => btn.classList.toggle("active-view", k === mode));
+      Object.entries(VIEW_ELS).forEach(([k, el]) => (el.style.display = k === mode ? "" : "none"));
+      // Search/status-filter apply to the three ticket/load tables, not the
+      // card-based contracts/settlements views.
+      const showFilters = mode === "loads" || mode === "field" || mode === "hauls";
+      searchEl.style.display = showFilters ? "" : "none";
+      statusFilterEl.style.display = showFilters ? "" : "none";
+
+      if (mode === "hauls" && !haulsLoaded) await fetchHauls();
+      if (mode === "contracts" && !contractsLoaded) { await ensureDestinations(); await ensureHauls(); await fetchContracts(); }
+      if (mode === "settlements" && !settlementsLoaded) { await ensureDestinations(); await ensureHauls(); await fetchSettlements(); }
       render();
-    });
-    viewFieldBtn.addEventListener("click", () => {
-      viewMode = "field";
-      viewFieldBtn.classList.add("active-view");
-      viewLoadsBtn.classList.remove("active-view");
-      viewHaulsBtn.classList.remove("active-view");
-      loadsTable.style.display = "none";
-      fieldTable.style.display = "";
-      haulsTable.style.display = "none";
-      render();
-    });
-    viewHaulsBtn.addEventListener("click", async () => {
-      viewMode = "hauls";
-      viewHaulsBtn.classList.add("active-view");
-      viewLoadsBtn.classList.remove("active-view");
-      viewFieldBtn.classList.remove("active-view");
-      loadsTable.style.display = "none";
-      fieldTable.style.display = "none";
-      haulsTable.style.display = "";
-      if (!haulsLoaded) await fetchHauls();
-      render();
-    });
+    }
+
+    viewLoadsBtn.addEventListener("click", () => switchView("loads"));
+    viewFieldBtn.addEventListener("click", () => switchView("field"));
+    viewHaulsBtn.addEventListener("click", () => switchView("hauls"));
+    viewContractsBtn.addEventListener("click", () => switchView("contracts"));
+    viewSettlementsBtn.addEventListener("click", () => switchView("settlements"));
 
     document.querySelectorAll("th[data-hsort]").forEach((th) => {
       th.addEventListener("click", () => {
@@ -395,8 +477,12 @@
         renderLoadsTable(rows);
       } else if (viewMode === "field") {
         renderFieldSummary(rows);
-      } else {
+      } else if (viewMode === "hauls") {
         renderHaulsTable();
+      } else if (viewMode === "contracts") {
+        renderContracts();
+      } else if (viewMode === "settlements") {
+        renderSettlements();
       }
     }
 
@@ -534,6 +620,8 @@
 
         return {
           haulId: s.client_id,
+          crop: s.crop,
+          destinationId: s.destination_id,
           departed_at: s.departed_at,
           driver: s.workers?.name || s.worker_id,
           origin, originStatus: s.origin_status,
@@ -556,13 +644,396 @@
       statusLine.textContent = `${allHauls.length} haul${allHauls.length === 1 ? "" : "s"}`;
     }
 
-    async function showPhoto(path, btn) {
+    async function showPhoto(path, btn, bucket = "scale-tickets") {
+      const label = btn.textContent;
       btn.textContent = "Loading…";
-      const { data, error } = await supabase.storage.from("scale-tickets").createSignedUrl(path, 3600);
-      if (error) { btn.textContent = "Could not load photo"; return; }
+      const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 3600);
+      if (error) { btn.textContent = "Could not load document"; return; }
       window.open(data.signedUrl, "_blank", "noopener");
-      btn.textContent = "View photo";
+      btn.textContent = label;
     }
+
+    // =====================================================================
+    // Contracts & Settlements
+    // =====================================================================
+
+    async function ensureDestinations() {
+      if (allDestinations.length) return;
+      const { data, error } = await supabase.from("destinations").select("*").order("name");
+      if (!error) allDestinations = data || [];
+      populateDestinationSelects();
+    }
+    async function ensureHauls() {
+      if (!haulsLoaded) await fetchHauls();
+    }
+    function destName(id) {
+      const d = allDestinations.find((x) => x.id === id);
+      if (!d) return id || "—";
+      return d.location ? `${d.name} (${d.location})` : d.name;
+    }
+    function populateDestinationSelects() {
+      const opts = allDestinations
+        .map((d) => `<option value="${escapeHtml(d.id)}">${escapeHtml(destName(d.id))}</option>`)
+        .join("");
+      const cfSel = document.getElementById("cf-destination");
+      const sfSel = document.getElementById("sf-destination");
+      if (cfSel) cfSel.innerHTML = opts;
+      if (sfSel) sfSel.innerHTML = opts;
+    }
+
+    function pickRow(text, btnLabel, onClick, tone = "") {
+      const row = document.createElement("div");
+      row.className = "ticket-pick-row";
+      const span = document.createElement("span");
+      span.style.flex = "1";
+      span.textContent = text;
+      row.appendChild(span);
+      const btn = document.createElement("button");
+      btn.className = `small-btn ${tone}`.trim();
+      btn.textContent = btnLabel;
+      btn.addEventListener("click", onClick);
+      row.appendChild(btn);
+      return row;
+    }
+    function haulSummary(h) {
+      if (!h) return "(load not found)";
+      return `${h.driver} · ${h.origin} · ${h.driverNet}`;
+    }
+
+    // ---------------- Contracts ----------------
+
+    async function fetchContracts() {
+      statusLine.textContent = "Loading…";
+      const [cRes, ctRes] = await Promise.all([
+        supabase.from("contract_progress").select("*").order("contract_date", { ascending: false }),
+        supabase.from("contract_tickets").select("*"),
+      ]);
+      if (cRes.error) { statusLine.textContent = "Error loading: " + cRes.error.message; return; }
+      const byContract = new Map();
+      (ctRes.data || []).forEach((row) => {
+        if (!byContract.has(row.contract_id)) byContract.set(row.contract_id, []);
+        byContract.get(row.contract_id).push(row.shipment_client_id);
+      });
+      allContracts = (cRes.data || []).map((c) => ({ ...c, assignedHaulIds: byContract.get(c.id) || [] }));
+      contractsLoaded = true;
+      statusLine.textContent = `${allContracts.length} contract${allContracts.length === 1 ? "" : "s"}`;
+    }
+
+    async function assignToContract(haulId, contractId) {
+      const { error } = await supabase.from("contract_tickets").insert({ contract_id: contractId, shipment_client_id: haulId });
+      if (error) { alert("Could not assign: " + error.message); return; }
+      await fetchContracts();
+      render();
+    }
+    async function unassignFromContract(haulId) {
+      const { error } = await supabase.from("contract_tickets").delete().eq("shipment_client_id", haulId);
+      if (error) { alert("Could not remove: " + error.message); return; }
+      await fetchContracts();
+      render();
+    }
+
+    function renderContracts() {
+      contractsListEl.innerHTML = "";
+      if (allContracts.length === 0) {
+        contractsListEl.innerHTML = `<div style="color:var(--text-muted);font-size:13px;">No contracts yet — click "+ Add contract" above.</div>`;
+        return;
+      }
+      const assignedElsewhere = new Set(allContracts.flatMap((c) => c.assignedHaulIds));
+      allContracts.forEach((c) => {
+        const pct = c.bushels > 0 ? Math.min(100, Math.round((c.delivered_bushels / c.bushels) * 100)) : 0;
+        const expanded = expandedContracts.has(c.id);
+        const saleLabel = c.sale_type === "non_gmo" ? "Non-GMO" : c.sale_type.charAt(0).toUpperCase() + c.sale_type.slice(1);
+
+        const card = document.createElement("div");
+        card.className = "item-card";
+        const head = document.createElement("div");
+        head.className = "item-card-head";
+        head.innerHTML = `
+          <div style="flex:1;">
+            <div style="font-weight:600;">${expanded ? "▾" : "▸"} ${escapeHtml(c.crop)} · ${escapeHtml(saleLabel)}${c.contract_number ? ` <span class="meta">#${escapeHtml(c.contract_number)}</span>` : ""}</div>
+            <div class="meta">${escapeHtml(destName(c.destination_id))}${c.delivery_period ? " · " + escapeHtml(c.delivery_period) : ""}${c.cash_price != null ? " · $" + c.cash_price + "/bu" : ""}</div>
+            <div class="progress-track"><div class="progress-fill" style="width:${pct}%;"></div></div>
+            <div class="meta">${Number(c.delivered_bushels).toLocaleString()} / ${Number(c.bushels).toLocaleString()} bu (${pct}%) — ${c.ticket_count} load${c.ticket_count === 1 ? "" : "s"}</div>
+          </div>
+        `;
+        head.addEventListener("click", () => {
+          if (expandedContracts.has(c.id)) expandedContracts.delete(c.id);
+          else expandedContracts.add(c.id);
+          renderContracts();
+        });
+        card.appendChild(head);
+
+        if (expanded) {
+          const detail = document.createElement("div");
+          detail.className = "item-detail";
+          if (c.notes) {
+            const n = document.createElement("div");
+            n.className = "meta";
+            n.style.marginBottom = "8px";
+            n.textContent = c.notes;
+            detail.appendChild(n);
+          }
+
+          const assignedLabel = document.createElement("div");
+          assignedLabel.style.cssText = "font-size:12px;color:var(--text-muted);margin-bottom:6px;";
+          assignedLabel.textContent = `Assigned loads (${c.assignedHaulIds.length})`;
+          detail.appendChild(assignedLabel);
+          if (c.assignedHaulIds.length === 0) {
+            const none = document.createElement("div");
+            none.className = "meta";
+            none.textContent = "None yet.";
+            detail.appendChild(none);
+          } else {
+            c.assignedHaulIds.forEach((haulId) => {
+              const h = allHauls.find((x) => x.haulId === haulId);
+              detail.appendChild(pickRow(haulSummary(h), "Remove", () => unassignFromContract(haulId)));
+            });
+          }
+
+          const eligible = allHauls.filter((h) => h.checkStatus !== "none" && !assignedElsewhere.has(h.haulId) && eligibleForContract(h, c));
+          const pickLabel = document.createElement("div");
+          pickLabel.style.cssText = "font-size:12px;color:var(--text-muted);margin:12px 0 6px;";
+          pickLabel.textContent = `Eligible, unassigned loads (${eligible.length})`;
+          detail.appendChild(pickLabel);
+          if (eligible.length === 0) {
+            const none = document.createElement("div");
+            none.className = "meta";
+            none.textContent = "None right now.";
+            detail.appendChild(none);
+          } else {
+            eligible.forEach((h) => detail.appendChild(pickRow(haulSummary(h), "Assign", () => assignToContract(h.haulId, c.id), "gold")));
+          }
+          card.appendChild(detail);
+        }
+        contractsListEl.appendChild(card);
+      });
+    }
+
+    const addContractBtn = document.getElementById("add-contract-btn");
+    const contractForm = document.getElementById("contract-form");
+    addContractBtn.addEventListener("click", async () => {
+      await ensureDestinations();
+      contractForm.style.display = contractForm.style.display === "none" ? "" : "none";
+    });
+    document.getElementById("cf-cancel").addEventListener("click", () => { contractForm.style.display = "none"; });
+    document.getElementById("cf-save").addEventListener("click", async () => {
+      const val = (id) => document.getElementById(id).value;
+      const numOrNull = (v) => (v === "" ? null : Number(v));
+      const payload = {
+        crop: val("cf-crop"),
+        sale_type: val("cf-sale-type"),
+        bushels: numOrNull(val("cf-bushels")),
+        contract_number: val("cf-number") || null,
+        destination_id: val("cf-destination") || null,
+        contract_date: val("cf-date") || null,
+        delivery_period: val("cf-period") || null,
+        futures_price: numOrNull(val("cf-futures")),
+        basis: numOrNull(val("cf-basis")),
+        cash_price: numOrNull(val("cf-cash")),
+        notes: val("cf-notes") || null,
+      };
+      if (!payload.bushels || payload.bushels <= 0) { alert("Enter the contracted bushels."); return; }
+      const { error } = await supabase.from("contracts").insert(payload);
+      if (error) { alert("Could not save: " + error.message); return; }
+      ["cf-bushels", "cf-number", "cf-date", "cf-period", "cf-futures", "cf-basis", "cf-cash", "cf-notes"].forEach((id) => (document.getElementById(id).value = ""));
+      contractForm.style.display = "none";
+      await fetchContracts();
+      render();
+    });
+
+    // ---------------- Settlements ----------------
+
+    async function fetchSettlements() {
+      statusLine.textContent = "Loading…";
+      const [sRes, stRes] = await Promise.all([
+        supabase.from("settlements").select("*").order("settlement_date", { ascending: false }),
+        supabase.from("settlement_tickets").select("*"),
+      ]);
+      if (sRes.error) { statusLine.textContent = "Error loading: " + sRes.error.message; return; }
+      const byS = new Map();
+      (stRes.data || []).forEach((row) => {
+        if (!byS.has(row.settlement_id)) byS.set(row.settlement_id, []);
+        byS.get(row.settlement_id).push(row.shipment_client_id);
+      });
+      allSettlements = (sRes.data || []).map((s) => ({ ...s, assignedHaulIds: byS.get(s.id) || [] }));
+      settlementsLoaded = true;
+      statusLine.textContent = `${allSettlements.length} settlement${allSettlements.length === 1 ? "" : "s"}`;
+    }
+
+    async function assignToSettlement(haulId, settlementId) {
+      const { error } = await supabase.from("settlement_tickets").insert({ settlement_id: settlementId, shipment_client_id: haulId });
+      if (error) { alert("Could not assign: " + error.message); return; }
+      await fetchSettlements();
+      render();
+    }
+    async function unassignFromSettlement(haulId) {
+      const { error } = await supabase.from("settlement_tickets").delete().eq("shipment_client_id", haulId);
+      if (error) { alert("Could not remove: " + error.message); return; }
+      await fetchSettlements();
+      render();
+    }
+    async function setSettlementPaid(id, paid, paidDateValue) {
+      const payload = { paid, paid_date: paid ? paidDateValue || new Date().toISOString().slice(0, 10) : null };
+      const { error } = await supabase.from("settlements").update(payload).eq("id", id);
+      if (error) { alert("Could not update: " + error.message); return; }
+      await fetchSettlements();
+      render();
+    }
+
+    function renderSettlements() {
+      settlementsListEl.innerHTML = "";
+      if (allSettlements.length === 0) {
+        settlementsListEl.innerHTML = `<div style="color:var(--text-muted);font-size:13px;">No settlements yet — click "+ Upload settlement" above.</div>`;
+        return;
+      }
+      const assignedElsewhere = new Set(allSettlements.flatMap((s) => s.assignedHaulIds));
+      allSettlements.forEach((s) => {
+        const expanded = expandedSettlements.has(s.id);
+        const totalBushels = s.assignedHaulIds.reduce((sum, id) => {
+          const h = allHauls.find((x) => x.haulId === id);
+          const bu = h && h._ticket ? h._ticket.net_bushels : null;
+          return sum + (bu || 0);
+        }, 0);
+
+        const card = document.createElement("div");
+        card.className = "item-card";
+        const head = document.createElement("div");
+        head.className = "item-card-head";
+        const info = document.createElement("div");
+        info.style.flex = "1";
+        info.innerHTML = `
+          <div style="font-weight:600;">${expanded ? "▾" : "▸"} ${escapeHtml(destName(s.destination_id))} <span class="badge ${s.paid ? "badge-paid" : "badge-unpaid"}">${s.paid ? "Paid" : "Unpaid"}</span></div>
+          <div class="meta">${s.settlement_date ? new Date(s.settlement_date).toLocaleDateString() : "No date"}${s.total_amount != null ? " · $" + Number(s.total_amount).toLocaleString() : ""} · ${s.assignedHaulIds.length} load${s.assignedHaulIds.length === 1 ? "" : "s"}${totalBushels ? " · " + totalBushels.toLocaleString() + " bu" : ""}</div>
+        `;
+        head.appendChild(info);
+        if (s.document_path) {
+          const docBtn = document.createElement("button");
+          docBtn.className = "small-btn";
+          docBtn.textContent = "View document";
+          docBtn.addEventListener("click", (e) => { e.stopPropagation(); showPhoto(s.document_path, docBtn, "settlements"); });
+          head.appendChild(docBtn);
+        }
+        head.addEventListener("click", (e) => {
+          if (e.target.closest("button")) return;
+          if (expandedSettlements.has(s.id)) expandedSettlements.delete(s.id);
+          else expandedSettlements.add(s.id);
+          renderSettlements();
+        });
+        card.appendChild(head);
+
+        if (expanded) {
+          const detail = document.createElement("div");
+          detail.className = "item-detail";
+          if (s.notes) {
+            const n = document.createElement("div");
+            n.className = "meta";
+            n.style.marginBottom = "10px";
+            n.textContent = s.notes;
+            detail.appendChild(n);
+          }
+
+          const paidWrap = document.createElement("div");
+          paidWrap.style.marginBottom = "14px";
+          if (s.paid) {
+            const p = document.createElement("span");
+            p.className = "meta";
+            p.style.marginRight = "10px";
+            p.textContent = `Paid${s.paid_date ? " on " + new Date(s.paid_date).toLocaleDateString() : ""}`;
+            paidWrap.appendChild(p);
+            const undoBtn = document.createElement("button");
+            undoBtn.className = "small-btn";
+            undoBtn.textContent = "Undo (mark unpaid)";
+            undoBtn.addEventListener("click", () => setSettlementPaid(s.id, false));
+            paidWrap.appendChild(undoBtn);
+          } else {
+            const dateInput = document.createElement("input");
+            dateInput.type = "date";
+            dateInput.style.cssText = "font-size:13px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);margin-right:8px;";
+            paidWrap.appendChild(dateInput);
+            const markBtn = document.createElement("button");
+            markBtn.className = "small-btn gold";
+            markBtn.textContent = "Mark paid";
+            markBtn.addEventListener("click", () => setSettlementPaid(s.id, true, dateInput.value));
+            paidWrap.appendChild(markBtn);
+          }
+          detail.appendChild(paidWrap);
+
+          const assignedLabel = document.createElement("div");
+          assignedLabel.style.cssText = "font-size:12px;color:var(--text-muted);margin-bottom:6px;";
+          assignedLabel.textContent = `Loads on this settlement (${s.assignedHaulIds.length})`;
+          detail.appendChild(assignedLabel);
+          if (s.assignedHaulIds.length === 0) {
+            const none = document.createElement("div");
+            none.className = "meta";
+            none.textContent = "None yet.";
+            detail.appendChild(none);
+          } else {
+            s.assignedHaulIds.forEach((haulId) => {
+              const h = allHauls.find((x) => x.haulId === haulId);
+              detail.appendChild(pickRow(haulSummary(h), "Remove", () => unassignFromSettlement(haulId)));
+            });
+          }
+
+          const eligible = allHauls.filter((h) => h.checkStatus !== "none" && !assignedElsewhere.has(h.haulId) && h.destinationId === s.destination_id);
+          const pickLabel = document.createElement("div");
+          pickLabel.style.cssText = "font-size:12px;color:var(--text-muted);margin:12px 0 6px;";
+          pickLabel.textContent = `Unassigned loads for this buyer (${eligible.length})`;
+          detail.appendChild(pickLabel);
+          if (eligible.length === 0) {
+            const none = document.createElement("div");
+            none.className = "meta";
+            none.textContent = "None right now.";
+            detail.appendChild(none);
+          } else {
+            eligible.forEach((h) => detail.appendChild(pickRow(haulSummary(h), "Assign", () => assignToSettlement(h.haulId, s.id), "gold")));
+          }
+          card.appendChild(detail);
+        }
+        settlementsListEl.appendChild(card);
+      });
+    }
+
+    const addSettlementBtn = document.getElementById("add-settlement-btn");
+    const settlementForm = document.getElementById("settlement-form");
+    addSettlementBtn.addEventListener("click", async () => {
+      await ensureDestinations();
+      settlementForm.style.display = settlementForm.style.display === "none" ? "" : "none";
+    });
+    document.getElementById("sf-cancel").addEventListener("click", () => { settlementForm.style.display = "none"; });
+    document.getElementById("sf-save").addEventListener("click", async () => {
+      const val = (id) => document.getElementById(id).value;
+      const fileInput = document.getElementById("sf-file");
+      const file = fileInput.files[0];
+      const payload = {
+        destination_id: val("sf-destination") || null,
+        settlement_date: val("sf-date") || null,
+        total_amount: val("sf-amount") === "" ? null : Number(val("sf-amount")),
+        notes: val("sf-notes") || null,
+      };
+      const saveBtn = document.getElementById("sf-save");
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Saving…";
+      try {
+        if (file) {
+          const path = `${crypto.randomUUID()}/${file.name}`;
+          const { error: upErr } = await supabase.storage.from("settlements").upload(path, file);
+          if (upErr) throw upErr;
+          payload.document_path = path;
+        }
+        const { error } = await supabase.from("settlements").insert(payload);
+        if (error) throw error;
+        ["sf-date", "sf-amount", "sf-notes"].forEach((id) => (document.getElementById(id).value = ""));
+        fileInput.value = "";
+        settlementForm.style.display = "none";
+        await fetchSettlements();
+        render();
+      } catch (err) {
+        alert("Could not save: " + err.message);
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = "Save settlement";
+      }
+    });
 
     function fmtVal(v) {
       if (v == null || v === "") return null;
