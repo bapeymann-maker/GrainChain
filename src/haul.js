@@ -977,8 +977,12 @@ export function createHaul(ctx) {
       )
     );
 
-    // Photo (required)
-    const fileInput = h("input", {
+    // Photo (required) — camera capture, or choosing an existing photo.
+    // Both feed the same compress/attach logic; only how the file is
+    // picked differs (capture="environment" forces the camera to open;
+    // the second input has no capture attribute, so the OS shows its
+    // normal file/photo picker instead).
+    const cameraInput = h("input", {
       type: "file",
       accept: "image/*",
       capture: "environment",
@@ -988,7 +992,16 @@ export function createHaul(ctx) {
         if (f) choosePhoto(f);
       },
     });
-    add(wrap, fileInput);
+    const libraryInput = h("input", {
+      type: "file",
+      accept: "image/*",
+      style: "display:none;",
+      onchange: (e) => {
+        const f = e.target.files && e.target.files[0];
+        if (f) choosePhoto(f);
+      },
+    });
+    add(wrap, cameraInput, libraryInput);
     add(wrap, label("Photo of the ticket *"));
     add(
       wrap,
@@ -998,9 +1011,17 @@ export function createHaul(ctx) {
           tone: ticket.photoUrl || ticket.hadPhoto ? "default" : "gold",
           disabled: ticket.photoBusy,
           sub: ticket.photoUrl ? "Photo attached — saves with the ticket" : ticket.hadPhoto ? "Already on file — tap to replace it" : "Required",
-          onClick: () => fileInput.click(),
+          onClick: () => cameraInput.click(),
         }
       )
+    );
+    add(
+      wrap,
+      bigButton("Choose from library", {
+        disabled: ticket.photoBusy,
+        sub: "Pick an existing photo instead of the camera",
+        onClick: () => libraryInput.click(),
+      })
     );
     if (ticket.photoUrl) {
       add(
