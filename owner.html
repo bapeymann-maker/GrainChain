@@ -1059,6 +1059,16 @@
       return typeof v === "number" ? v.toLocaleString() : String(v);
     }
 
+    // Whether the AI's own notes point at the buyer/location specifically
+    // (not just "something on this ticket is flagged") — a ticket can be
+    // flagged for a completely unrelated reason (a cut-off ticket number,
+    // a weight mismatch) while the buyer/location it read are perfectly
+    // legible, and the suggestion shouldn't show up in that case.
+    function buyerLooksFlagged(read) {
+      const text = [...(Array.isArray(read.legibility_issues) ? read.legibility_issues : []), read.arithmetic_check || ""].join(" ").toLowerCase();
+      return text.includes("buyer") || text.includes("location") || text.includes("address");
+    }
+
     function buildDetailPanel(r) {
       const t = r._ticket || {};
       const read = r._read || {};
@@ -1119,7 +1129,7 @@
       // — is a more reliable source than trying to match partial digits
       // against old tickets, so that's what gets suggested. A manual
       // override stays available underneath for when it isn't right.
-      if (r._read && r._read.id != null && r.destinationName && (r.checkStatus === "review" || r.checkStatus === "reviewed")) {
+      if (r._read && r._read.id != null && r.destinationName && (r.checkStatus === "review" || r.checkStatus === "reviewed") && (buyerLooksFlagged(r._read) || r._read.buyer_override_name)) {
         const bcWrap = document.createElement("div");
         bcWrap.style.cssText = "margin-top:12px;border-top:1px solid var(--border);padding-top:12px;";
         const heading = document.createElement("div");
