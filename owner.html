@@ -81,6 +81,12 @@
     .small-btn.gold { border-color: var(--gold); background: var(--gold-dark); color: var(--gold); }
     .badge-paid { color: var(--organic); background: var(--organic-dark); }
     .badge-unpaid { color: #E2812B; background: #3A250D; }
+    .dash-section-title { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
+    .dash-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-bottom: 8px; }
+    .dash-card { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+    .dash-card-title { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 8px; }
+    .dash-stat-row { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 2px; }
+    .dash-big-num { font-size: 26px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
     #table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
     #status-line { color: var(--text-muted); font-size: 13px; margin-bottom: 10px; }
     #filter-row { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -117,7 +123,8 @@
         <option value="transitional">Transitional</option>
         <option value="conventional">Conventional</option>
       </select>
-      <button id="view-loads-btn" class="view-btn active-view">All Loads</button>
+      <button id="view-dashboard-btn" class="view-btn">Dashboard</button>
+      <button id="view-loads-btn" class="view-btn active-view">Field to Bin</button>
       <button id="view-field-btn" class="view-btn">By Field</button>
       <button id="view-hauls-btn" class="view-btn">Hauls &amp; Tickets</button>
       <button id="view-contracts-btn" class="view-btn">Contracts</button>
@@ -216,6 +223,16 @@
         </div>
         <div id="settlements-list"></div>
       </div>
+
+      <div id="dashboard-view" style="display:none;">
+        <div id="dash-period-row" style="display:flex;gap:8px;margin-bottom:16px;">
+          <button id="dash-day-btn" class="view-btn active-view" data-period="day">Day</button>
+          <button id="dash-week-btn" class="view-btn" data-period="week">Last 7 days</button>
+          <button id="dash-month-btn" class="view-btn" data-period="month">Last 30 days</button>
+          <button id="dash-ytd-btn" class="view-btn" data-period="ytd">YTD</button>
+        </div>
+        <div id="dash-content"></div>
+      </div>
     </div>
   </div>
 
@@ -245,6 +262,9 @@
     const haulsRowsEl = document.getElementById("hauls-rows");
     const viewContractsBtn = document.getElementById("view-contracts-btn");
     const viewSettlementsBtn = document.getElementById("view-settlements-btn");
+    const viewDashboardBtn = document.getElementById("view-dashboard-btn");
+    const dashboardView = document.getElementById("dashboard-view");
+    const dashContentEl = document.getElementById("dash-content");
     const contractsView = document.getElementById("contracts-view");
     const settlementsView = document.getElementById("settlements-view");
     const contractsListEl = document.getElementById("contracts-list");
@@ -266,6 +286,7 @@
     let contractsLoaded = false, settlementsLoaded = false;
     const expandedContracts = new Set();
     const expandedSettlements = new Set();
+    let dashboardPeriod = "day"; // "day" | "week" | "month" | "ytd" — week/month are rolling 7/30 days, not calendar
 
     // organic contract  <- organic-status hauls of that crop
     // conventional      <- conventional OR transitional hauls of that crop
@@ -374,30 +395,54 @@
     searchEl.addEventListener("input", render);
     statusFilterEl.addEventListener("change", render);
 
-    const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn };
-    const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView };
+    const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn, dashboard: viewDashboardBtn };
+    const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView, dashboard: dashboardView };
+
+    async function ensureContracts() {
+      if (!contractsLoaded) { await ensureDestinations(); await ensureHauls(); await fetchContracts(); }
+    }
+    async function ensureSettlements() {
+      if (!settlementsLoaded) { await ensureDestinations(); await ensureHauls(); await fetchSettlements(); }
+    }
+    async function ensureLoads() {
+      if (allLoads.length === 0) await fetchLoads();
+    }
 
     async function switchView(mode) {
       viewMode = mode;
       Object.entries(VIEW_BTNS).forEach(([k, btn]) => btn.classList.toggle("active-view", k === mode));
       Object.entries(VIEW_ELS).forEach(([k, el]) => (el.style.display = k === mode ? "" : "none"));
       // Search/status-filter apply to the three ticket/load tables, not the
-      // card-based contracts/settlements views.
+      // card-based contracts/settlements/dashboard views.
       const showFilters = mode === "loads" || mode === "field" || mode === "hauls";
       searchEl.style.display = showFilters ? "" : "none";
       statusFilterEl.style.display = showFilters ? "" : "none";
 
       if (mode === "hauls" && !haulsLoaded) await fetchHauls();
-      if (mode === "contracts" && !contractsLoaded) { await ensureDestinations(); await ensureHauls(); await fetchContracts(); }
-      if (mode === "settlements" && !settlementsLoaded) { await ensureDestinations(); await ensureHauls(); await fetchSettlements(); }
+      if (mode === "contracts") await ensureContracts();
+      if (mode === "settlements") await ensureSettlements();
+      if (mode === "dashboard") {
+        await Promise.all([ensureLoads(), ensureHauls(), ensureContracts(), ensureSettlements()]);
+        await renderDashboard();
+        return; // renderDashboard draws dash-content itself; skip the generic render() below
+      }
       render();
     }
+
+    document.querySelectorAll("#dash-period-row button[data-period]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        dashboardPeriod = btn.dataset.period;
+        document.querySelectorAll("#dash-period-row button[data-period]").forEach((b) => b.classList.toggle("active-view", b === btn));
+        renderDashboard();
+      });
+    });
 
     viewLoadsBtn.addEventListener("click", () => switchView("loads"));
     viewFieldBtn.addEventListener("click", () => switchView("field"));
     viewHaulsBtn.addEventListener("click", () => switchView("hauls"));
     viewContractsBtn.addEventListener("click", () => switchView("contracts"));
     viewSettlementsBtn.addEventListener("click", () => switchView("settlements"));
+    viewDashboardBtn.addEventListener("click", () => switchView("dashboard"));
 
     document.querySelectorAll("th[data-hsort]").forEach((th) => {
       th.addEventListener("click", () => {
@@ -1054,6 +1099,158 @@
         saveBtn.textContent = "Save settlement";
       }
     });
+
+    // ---------------------------------------------------------------------
+    // Dashboard
+    // ---------------------------------------------------------------------
+
+    function periodBounds(period) {
+      const now = new Date();
+      let start;
+      if (period === "day") { start = new Date(now); start.setHours(0, 0, 0, 0); }
+      else if (period === "week") start = new Date(now.getTime() - 7 * 24 * 3600 * 1000); // rolling 7 days, not calendar week
+      else if (period === "month") start = new Date(now.getTime() - 30 * 24 * 3600 * 1000); // rolling 30 days, not calendar month
+      else start = new Date(now.getFullYear(), 0, 1); // ytd
+      return { start, end: now };
+    }
+    function inPeriod(dateStr, bounds) {
+      if (!dateStr) return false;
+      const d = new Date(dateStr);
+      return d >= bounds.start && d <= bounds.end;
+    }
+
+    async function renderDashboard() {
+      const bounds = periodBounds(dashboardPeriod);
+
+      // ---- Production (Field to Bin) by crop, in period ----
+      const production = {}; // crop -> { total, byStatus }
+      allLoads.forEach((l) => {
+        if (!inPeriod(l.logged_at, bounds)) return;
+        const crop = l.crop_raw || "Unknown";
+        const bu = toBushels(l);
+        if (!production[crop]) production[crop] = { total: 0, byStatus: {} };
+        production[crop].total += bu;
+        const st = l.status || "unknown";
+        production[crop].byStatus[st] = (production[crop].byStatus[st] || 0) + bu;
+      });
+
+      // ---- Delivered (Hauled Out) by crop, in period ----
+      const delivered = {};
+      let reviewQueueCount = 0; // current state, not period-scoped
+      allHauls.forEach((h) => {
+        if (h.checkStatus === "review") reviewQueueCount++;
+        if (h.checkStatus === "none") return; // no ticket entered — nothing delivered to count yet
+        if (!inPeriod(h.departed_at, bounds)) return;
+        const crop = h.crop || "Unknown";
+        const bu = (h._ticket && h._ticket.net_bushels) || 0;
+        if (!delivered[crop]) delivered[crop] = { total: 0, byStatus: {} };
+        delivered[crop].total += bu;
+        const st = h.originStatus || "unknown";
+        delivered[crop].byStatus[st] = (delivered[crop].byStatus[st] || 0) + bu;
+      });
+
+      // ---- Dollars ----
+      const settledInPeriod = allSettlements.filter((s) => inPeriod(s.settlement_date, bounds));
+      const settledAmount = settledInPeriod.reduce((sum, s) => sum + (s.total_amount || 0), 0);
+      const unpaidSettlements = allSettlements.filter((s) => !s.paid);
+      const unpaidTotal = unpaidSettlements.reduce((sum, s) => sum + (s.total_amount || 0), 0);
+
+      // Estimated $ for hauls delivered in this period, priced only where a
+      // contract is actually assigned — an unassigned load has no reliable
+      // price in this system, so it's counted separately, not guessed at.
+      const { data: ctRows, error: ctErr } = await supabase.from("contract_tickets").select("shipment_client_id, contract_id");
+      const contractByHaul = new Map((ctRows || []).map((row) => [row.shipment_client_id, row.contract_id]));
+      const contractPriceById = new Map(allContracts.map((c) => [c.id, c.cash_price]));
+      let estimatedAmount = 0, unpricedBushels = 0, unpricedCount = 0;
+      const haulsInPeriod = allHauls.filter((h) => h.checkStatus !== "none" && inPeriod(h.departed_at, bounds));
+      haulsInPeriod.forEach((h) => {
+        const bu = (h._ticket && h._ticket.net_bushels) || 0;
+        const contractId = contractByHaul.get(h.haulId);
+        const price = contractId != null ? contractPriceById.get(contractId) : null;
+        if (price != null) estimatedAmount += bu * price;
+        else { unpricedBushels += bu; unpricedCount++; }
+      });
+
+      // ---- Contracts (current state — not period-scoped) ----
+      const openContracts = allContracts.filter((c) => c.delivered_bushels < c.bushels);
+      const totalContracted = openContracts.reduce((sum, c) => sum + c.bushels, 0);
+      const totalContractedDelivered = openContracts.reduce((sum, c) => sum + c.delivered_bushels, 0);
+
+      // ---- Render ----
+      const crops = [...new Set([...Object.keys(production), ...Object.keys(delivered)])].sort();
+      const fmtBu = (n) => Math.round(n).toLocaleString() + " bu";
+      const fmtUsd = (n) => "$" + Math.round(n).toLocaleString();
+      const statusLine = (byStatus) => Object.entries(byStatus).map(([st, bu]) => `${st}: ${fmtBu(bu)}`).join(" · ") || "—";
+      const periodLabel = { day: "today", week: "the last 7 days", month: "the last 30 days", ytd: "year to date" }[dashboardPeriod];
+
+      let html = `<div class="dash-section-title">Production vs. delivered — ${escapeHtml(periodLabel)}</div>`;
+      if (crops.length === 0) {
+        html += `<div style="color:var(--text-muted);font-size:13px;margin-bottom:20px;">Nothing recorded in this period.</div>`;
+      } else {
+        html += `<div class="dash-grid">`;
+        crops.forEach((crop) => {
+          const prod = production[crop] || { total: 0, byStatus: {} };
+          const del = delivered[crop] || { total: 0, byStatus: {} };
+          const pct = prod.total > 0 ? Math.min(100, Math.round((del.total / prod.total) * 100)) : del.total > 0 ? 100 : 0;
+          html += `
+            <div class="dash-card">
+              <div class="dash-card-title">${escapeHtml(crop)}</div>
+              <div class="dash-stat-row"><span>Produced </span><span class="driver-val">${fmtBu(prod.total)}</span></div>
+              <div class="meta" style="margin-bottom:8px;">${escapeHtml(statusLine(prod.byStatus))}</div>
+              <div class="dash-stat-row"><span>Delivered </span><span class="ai-val">${fmtBu(del.total)}</span></div>
+              <div class="meta" style="margin-bottom:8px;">${escapeHtml(statusLine(del.byStatus))}</div>
+              <div class="progress-track"><div class="progress-fill" style="width:${pct}%;"></div></div>
+              <div class="meta">${pct}% of production delivered</div>
+            </div>`;
+        });
+        html += `</div>`;
+      }
+
+      const totalDeliveredBu = haulsInPeriod.reduce((sum, h) => sum + ((h._ticket && h._ticket.net_bushels) || 0), 0);
+      html += `
+        <div class="dash-section-title" style="margin-top:24px;">Hauls &amp; dollars — ${escapeHtml(periodLabel)}</div>
+        <div class="dash-grid">
+          <div class="dash-card">
+            <div class="dash-card-title">Loads hauled out</div>
+            <div class="dash-big-num">${haulsInPeriod.length}</div>
+            <div class="meta">${fmtBu(totalDeliveredBu)} total</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-title">Settled (actual)</div>
+            <div class="dash-big-num">${fmtUsd(settledAmount)}</div>
+            <div class="meta">${settledInPeriod.length} settlement${settledInPeriod.length === 1 ? "" : "s"} in this period</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-title">Estimated (from contract price)</div>
+            <div class="dash-big-num">${fmtUsd(estimatedAmount)}</div>
+            <div class="meta">${unpricedCount > 0 ? `+ ${fmtBu(unpricedBushels)} not yet priced (no contract assigned)` : "every load this period is priced"}</div>
+          </div>
+        </div>`;
+
+      html += `
+        <div class="dash-section-title" style="margin-top:24px;">Right now</div>
+        <div class="dash-grid">
+          <div class="dash-card">
+            <div class="dash-card-title">Open contracts</div>
+            <div class="dash-big-num">${openContracts.length}</div>
+            <div class="meta">${fmtBu(totalContractedDelivered)} / ${fmtBu(totalContracted)} delivered against them</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-title">Unpaid settlements</div>
+            <div class="dash-big-num">${fmtUsd(unpaidTotal)}</div>
+            <div class="meta">${unpaidSettlements.length} outstanding</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-title">AI readings needing review</div>
+            <div class="dash-big-num">${reviewQueueCount}</div>
+            <div class="meta">flagged, not yet marked reviewed</div>
+          </div>
+        </div>`;
+
+      if (ctErr) html += `<div style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load contract assignments for the dollar estimate: ${escapeHtml(ctErr.message)}</div>`;
+
+      dashContentEl.innerHTML = html;
+    }
 
     function fmtVal(v) {
       if (v == null || v === "") return null;
