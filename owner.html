@@ -45,6 +45,7 @@
     .badge-conventional { color: var(--conventional); background: var(--conventional-dark); }
     .badge-match { color: var(--organic); background: var(--organic-dark); }
     .badge-review { color: #E2812B; background: #3A250D; }
+    .badge-reviewed { color: var(--driver-blue); background: var(--driver-blue-dark); }
     .badge-none { color: var(--text-muted); background: var(--panel-alt); }
     .photo-link { color: var(--gold); font-size: 12px; text-decoration: underline; background: none; border: none; cursor: pointer; padding: 0; }
     .driver-val { color: var(--driver-blue); }
@@ -222,6 +223,7 @@
     const supabase = createClient(
       "https://ewzlxjimbxwurzbjzbxw.supabase.co",
       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3emx4amltYnh3dXJ6Ymp6Ynh3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3NDA4NDksImV4cCI6MjEwNTMxNjg0OX0.wJTPNqDP07_129K_90X-SOb4oji8ZENWi4S9L0xjGQk"
+    );
     );
 
     const loginView = document.getElementById("login-view");
@@ -616,6 +618,14 @@
           const buClose = read.net_bu == null || ticket.net_bushels == null || Math.abs(read.net_bu - ticket.net_bushels) <= Math.max(1, ticket.net_bushels * 0.01);
           if (read.needs_review || !netClose || !buClose) { checkStatus = "review"; checkLabel = "Needs review"; }
           else { checkStatus = "match"; checkLabel = "Matches driver entry"; }
+        }
+        // A human can mark a flagged reading as checked — it stays flagged
+        // by the math/AI (that record shouldn't change), but stops showing
+        // as needing attention. "Waiting on AI read" has no read row yet
+        // (nothing to mark reviewed), so this only applies to the other two.
+        if (checkStatus === "review" && read && read.reviewed) {
+          checkStatus = "reviewed";
+          checkLabel = "Reviewed";
         }
 
         return {
@@ -1093,7 +1103,44 @@
         });
         wrap.appendChild(btn);
       }
+
+      // A flagged reading can be marked as checked by a human — it stays
+      // flagged in the underlying data (the math/AI record doesn't change),
+      // it just stops showing as needing attention. Only shown when there's
+      // an actual ticket_reads row to toggle (r._read has its id).
+      if (r._read && r._read.id != null && (r.checkStatus === "review" || r.checkStatus === "reviewed")) {
+        const reviewWrap = document.createElement("div");
+        reviewWrap.style.cssText = "margin-top:12px;display:flex;align-items:center;gap:10px;";
+        if (r.checkStatus === "reviewed") {
+          const note = document.createElement("span");
+          note.className = "meta";
+          note.textContent = `Reviewed${r._read.reviewed_at ? " on " + new Date(r._read.reviewed_at).toLocaleDateString() : ""}`;
+          reviewWrap.appendChild(note);
+          const undoBtn = document.createElement("button");
+          undoBtn.className = "small-btn";
+          undoBtn.textContent = "Undo (needs review again)";
+          undoBtn.addEventListener("click", (e) => { e.stopPropagation(); setReadReviewed(r._read.id, false); });
+          reviewWrap.appendChild(undoBtn);
+        } else {
+          const markBtn = document.createElement("button");
+          markBtn.className = "small-btn gold";
+          markBtn.textContent = "Mark reviewed";
+          markBtn.addEventListener("click", (e) => { e.stopPropagation(); setReadReviewed(r._read.id, true); });
+          reviewWrap.appendChild(markBtn);
+        }
+        wrap.appendChild(reviewWrap);
+      }
       return wrap;
+    }
+
+    async function setReadReviewed(readId, reviewed) {
+      const { error } = await supabase
+        .from("ticket_reads")
+        .update({ reviewed, reviewed_at: reviewed ? new Date().toISOString() : null })
+        .eq("id", readId);
+      if (error) { alert("Could not update: " + error.message); return; }
+      await fetchHauls();
+      render();
     }
 
     function renderHaulsTable() {
