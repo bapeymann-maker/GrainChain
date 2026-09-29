@@ -191,9 +191,25 @@ module.exports = async function handler(req, res) {
     if (read.gross_bu != null && read.shrink_bu != null && read.net_bu != null && !near(read.net_bu, read.gross_bu - read.shrink_bu, 0.5)) {
       problems.push(`net_bu ${read.net_bu} vs gross-shrink = ${(read.gross_bu - read.shrink_bu).toFixed(2)}`);
     }
-    if (Array.isArray(read.owner_splits) && read.owner_splits.length && read.net_lb != null) {
-      const sum = read.owner_splits.reduce((s, o) => s + (o.net_lb || 0), 0);
-      if (!near(sum, read.net_lb, 1)) problems.push(`owner_splits sum ${sum} != net_lb ${read.net_lb}`);
+    if (Array.isArray(read.owner_splits) && read.owner_splits.length) {
+      // Tickets print splits in whichever unit they use — some show lb per
+      // owner, some (most single-owner Meuret tickets) show only bushels
+      // under "Net Units". Only check the unit that's ACTUALLY populated
+      // on every split; a split missing that unit isn't "0", it's just not
+      // printed that way, so summing it as 0 would false-flag almost every
+      // single-owner ticket.
+      const n = read.owner_splits.length;
+      const lbVals = read.owner_splits.map((o) => o.net_lb).filter((v) => v != null);
+      const buVals = read.owner_splits.map((o) => o.net_bu).filter((v) => v != null);
+      if (lbVals.length === n && read.net_lb != null) {
+        const sum = lbVals.reduce((a, b) => a + b, 0);
+        if (!near(sum, read.net_lb, 1)) problems.push(`owner_splits (lb) sum ${sum} != net_lb ${read.net_lb}`);
+      } else if (buVals.length === n && read.net_bu != null) {
+        const sum = buVals.reduce((a, b) => a + b, 0);
+        if (!near(sum, read.net_bu, 0.5)) problems.push(`owner_splits (bu) sum ${sum} != net_bu ${read.net_bu}`);
+      }
+      // Otherwise (mixed or missing units across splits): nothing reliable
+      // to check against — skip rather than guess.
     }
     if ((read.legibility_issues || []).length) problems.push(`legibility: ${read.legibility_issues.map((i) => `${i.field}: ${i.note}`).join("; ")}`);
 
