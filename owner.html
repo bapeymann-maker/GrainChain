@@ -48,6 +48,7 @@
     .badge-reviewed { color: var(--driver-blue); background: var(--driver-blue-dark); }
     .suggestion-box { border: 1px solid var(--gold); border-radius: 8px; padding: 10px 12px; margin-top: 10px; font-size: 13px; background: var(--panel); }
     .suggestion-box .accepted { color: var(--organic); }
+    .field-correction-row { margin: 4px 0 10px; padding: 8px 0 8px 12px; border-left: 2px solid var(--gold); }
     .badge-none { color: var(--text-muted); background: var(--panel-alt); }
     .photo-link { color: var(--gold); font-size: 12px; text-decoration: underline; background: none; border: none; cursor: pointer; padding: 0; }
     .driver-val { color: var(--driver-blue); }
@@ -284,47 +285,46 @@
     // since most fields only exist on one side. Grouped for readability.
     const DETAIL_FIELDS = [
       { group: "Ticket" },
-      { label: "Ticket number", d: (t) => t.ticket_number, a: (r) => (r.ticket_number ? r.ticket_number + (r.ticket_number_complete === false ? " (partial — covered/cut off)" : "") : null) },
-      {
-        label: "Buyer",
-        a: (r) =>
-          r.buyer_override_name
-            ? [r.buyer_override_name, r.buyer_override_location].filter(Boolean).join(" — ") + " (corrected)"
-            : [r.buyer_name, r.buyer_location].filter(Boolean).join(" — "),
-      },
-      { label: "Ticket date", a: (r) => r.ticket_date },
-      { label: "Commodity", a: (r) => r.commodity },
+      { key: "ticket_number", label: "Ticket number", d: (t) => t.ticket_number, a: (r) => (r.ticket_number ? r.ticket_number + (r.ticket_number_complete === false ? " (partial — covered/cut off)" : "") : null) },
+      { key: "buyer", label: "Buyer", a: (r) => [r.buyer_name, r.buyer_location].filter(Boolean).join(" — ") },
+      { key: "ticket_date", label: "Ticket date", a: (r) => r.ticket_date },
+      { key: "commodity", label: "Commodity", a: (r) => r.commodity },
       { group: "Weight" },
-      { label: "Gross (lb)", d: (t) => t.gross_lb, a: (r) => r.gross_lb },
-      { label: "Tare (lb)", d: (t) => t.tare_lb, a: (r) => r.tare_lb },
-      { label: "Net (lb)", d: (t) => t.net_lb, a: (r) => r.net_lb },
-      { label: "Gross time", a: (r) => r.gross_time },
-      { label: "Tare time", a: (r) => r.tare_time },
+      { key: "gross_lb", label: "Gross (lb)", d: (t) => t.gross_lb, a: (r) => r.gross_lb },
+      { key: "tare_lb", label: "Tare (lb)", d: (t) => t.tare_lb, a: (r) => r.tare_lb },
+      { key: "net_lb", label: "Net (lb)", d: (t) => t.net_lb, a: (r) => r.net_lb },
+      { key: "gross_time", label: "Gross time", a: (r) => r.gross_time },
+      { key: "tare_time", label: "Tare time", a: (r) => r.tare_time },
       { group: "Bushels" },
-      { label: "Gross (bu)", a: (r) => r.gross_bu },
-      { label: "Shrink (bu)", a: (r) => r.shrink_bu },
-      { label: "Net (bu)", d: (t) => t.net_bushels, a: (r) => r.net_bu },
+      { key: "gross_bu", label: "Gross (bu)", a: (r) => r.gross_bu },
+      { key: "shrink_bu", label: "Shrink (bu)", a: (r) => r.shrink_bu },
+      { key: "net_bu", label: "Net (bu)", d: (t) => t.net_bushels, a: (r) => r.net_bu },
       { group: "Grading" },
-      { label: "Moisture %", d: (t) => t.moisture_pct, a: (r) => r.moisture_pct },
-      { label: "Test weight", d: (t) => t.test_weight, a: (r) => r.test_weight },
-      { label: "Foreign material %", a: (r) => r.foreign_material_pct },
-      { label: "Damage %", a: (r) => r.damage_pct },
-      { label: "Heat damage %", a: (r) => r.heat_damage_pct },
+      { key: "moisture_pct", label: "Moisture %", d: (t) => t.moisture_pct, a: (r) => r.moisture_pct },
+      { key: "test_weight", label: "Test weight", d: (t) => t.test_weight, a: (r) => r.test_weight },
+      { key: "foreign_material_pct", label: "Foreign material %", a: (r) => r.foreign_material_pct },
+      { key: "damage_pct", label: "Damage %", a: (r) => r.damage_pct },
+      { key: "heat_damage_pct", label: "Heat damage %", a: (r) => r.heat_damage_pct },
       { group: "Other" },
-      { label: "Vehicle ID (printed)", a: (r) => r.vehicle_id_printed },
-      { label: "BOL", a: (r) => r.bol },
+      { key: "vehicle_id_printed", label: "Vehicle ID (printed)", a: (r) => r.vehicle_id_printed },
+      { key: "bol", label: "BOL", a: (r) => r.bol },
       {
+        key: "owner_splits",
         label: "Owner splits",
         a: (r) => (Array.isArray(r.owner_splits) && r.owner_splits.length ? r.owner_splits.map((o) => `${o.name}: ${o.pct != null ? o.pct + "%" : ""} ${o.net_lb != null ? "— " + o.net_lb.toLocaleString() + " lb" : ""} ${o.net_bu != null ? "/ " + o.net_bu + " bu" : ""}`).join("; ") : null),
       },
-      { label: "Driver's notes", d: (t) => t.notes },
-      { label: "Handwritten on ticket", a: (r) => r.handwritten_notes },
+      { label: "Driver's notes", d: (t) => t.notes }, // driver-only; nothing for the AI to misread here, so no key/correction
+      { key: "handwritten_notes", label: "Handwritten on ticket", a: (r) => r.handwritten_notes },
       { group: "AI read" },
-      { label: "Legibility issues", a: (r) => (Array.isArray(r.legibility_issues) && r.legibility_issues.length ? r.legibility_issues.join("; ") : null) },
+      { label: "Legibility issues", a: (r) => (Array.isArray(r.legibility_issues) && r.legibility_issues.length ? r.legibility_issues.map((i) => `${i.field}: ${i.note}`).join("; ") : null) },
       { label: "Arithmetic check", a: (r) => r.arithmetic_check },
       { label: "Cleaning affidavit", a: (r) => (r.cleaning_affidavit ? `${r.cleaning_affidavit.present ? "Present" : "Not shown"}${r.cleaning_affidavit.signed ? ", signed" : ""}${r.cleaning_affidavit.date_filled ? " " + r.cleaning_affidavit.date_filled : ""}` : null) },
       { label: "Read at", a: (r) => (r.read_at ? new Date(r.read_at).toLocaleString() : null) },
     ];
+    // label -> key, so the correction UI can find a field's driver-side
+    // accessor (`d`) by key without a second lookup table.
+    const FIELD_BY_KEY = Object.fromEntries(DETAIL_FIELDS.filter((f) => f.key).map((f) => [f.key, f]));
+
     let sortKey = "logged_at";
     let sortDir = "desc";
     let viewMode = "loads"; // "loads" | "field"
@@ -1059,14 +1059,110 @@
       return typeof v === "number" ? v.toLocaleString() : String(v);
     }
 
-    // Whether the AI's own notes point at the buyer/location specifically
-    // (not just "something on this ticket is flagged") — a ticket can be
-    // flagged for a completely unrelated reason (a cut-off ticket number,
-    // a weight mismatch) while the buyer/location it read are perfectly
-    // legible, and the suggestion shouldn't show up in that case.
-    function buyerLooksFlagged(read) {
-      const text = [...(Array.isArray(read.legibility_issues) ? read.legibility_issues : []), read.arithmetic_check || ""].join(" ").toLowerCase();
-      return text.includes("buyer") || text.includes("location") || text.includes("address");
+    // Whether the AI itself tagged a specific field as flagged (structured
+    // — the AI's tool schema requires it to name the field an issue
+    // concerns — not guessed from keywords in free text).
+    function fieldIsFlagged(read, key) {
+      return Array.isArray(read.legibility_issues) && read.legibility_issues.some((i) => i && i.field === key);
+    }
+    // A saved correction for one field, normalized to {value, at} — buyer
+    // reads its own dedicated columns (a compound name+location pair,
+    // already deployed); every other field reads the generic JSONB blob.
+    function getFieldCorrection(read, key) {
+      if (key === "buyer") {
+        return read.buyer_override_name ? { value: [read.buyer_override_name, read.buyer_override_location].filter(Boolean).join(" — "), at: read.buyer_override_at } : null;
+      }
+      const c = read.field_corrections && read.field_corrections[key];
+      return c ? { value: c.value, at: c.corrected_at } : null;
+    }
+    // Where a suggested correction comes from, when one exists at all:
+    // buyer suggests the haul's own destination (chosen by the driver
+    // independent of the photo); any field the driver ALSO enters
+    // suggests the driver's own value (more reliable than a partial AI
+    // read); every other AI-only field has no trustworthy alternate
+    // source, so it's manual-entry only — no "smart" guessing.
+    function getFieldSuggestion(f, r, t) {
+      if (f.key === "buyer") return r.destinationName ? { value: [r.destinationName, r.destinationLocation].filter(Boolean).join(" — "), source: "this haul's own destination" } : null;
+      if (f.d) {
+        const v = fmtVal(f.d(t));
+        return v != null ? { value: v, source: "the driver's own entry" } : null;
+      }
+      return null;
+    }
+
+    function buildFieldCorrectionRow(r, read, t, f) {
+      const row = document.createElement("div");
+      row.className = "field-correction-row";
+      row.style.gridColumn = "1 / -1";
+      const corrected = getFieldCorrection(read, f.key);
+
+      if (corrected) {
+        const note = document.createElement("div");
+        note.className = "meta";
+        note.style.marginBottom = "6px";
+        note.textContent = `Corrected to: ${corrected.value}${corrected.at ? " on " + new Date(corrected.at).toLocaleDateString() : ""}`;
+        row.appendChild(note);
+      } else {
+        const suggestion = getFieldSuggestion(f, r, t);
+        if (suggestion) {
+          const sugRow = document.createElement("div");
+          sugRow.style.cssText = "display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;";
+          const sugText = document.createElement("span");
+          sugText.style.fontSize = "13px";
+          sugText.innerHTML = `Suggested: <span class="${f.key === "buyer" ? "ai-val" : "driver-val"}">${escapeHtml(suggestion.value)}</span> <span class="meta">— from ${escapeHtml(suggestion.source)}</span>`;
+          sugRow.appendChild(sugText);
+          const acceptBtn = document.createElement("button");
+          acceptBtn.className = "small-btn gold";
+          acceptBtn.textContent = "Accept";
+          acceptBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if (f.key === "buyer") setBuyerCorrection(read.id, r.destinationName, r.destinationLocation);
+            else setFieldCorrection(read.id, read.field_corrections, f.key, suggestion.value);
+          });
+          sugRow.appendChild(acceptBtn);
+          row.appendChild(sugRow);
+        }
+      }
+
+      const inputStyle = "font-size:13px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);flex:1;min-width:140px;";
+      const manualRow = document.createElement("div");
+      manualRow.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;align-items:center;";
+      if (f.key === "buyer") {
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.placeholder = "Buyer name";
+        nameInput.value = read.buyer_override_name || "";
+        nameInput.style.cssText = inputStyle;
+        const locInput = document.createElement("input");
+        locInput.type = "text";
+        locInput.placeholder = "Location";
+        locInput.value = read.buyer_override_location || "";
+        locInput.style.cssText = inputStyle;
+        const saveBtn = document.createElement("button");
+        saveBtn.className = "small-btn";
+        saveBtn.textContent = "Save correction";
+        saveBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          setBuyerCorrection(read.id, nameInput.value.trim() || null, locInput.value.trim() || null);
+        });
+        manualRow.append(nameInput, locInput, saveBtn);
+      } else {
+        const input = document.createElement("input");
+        input.type = "text";
+        input.placeholder = f.label;
+        input.value = corrected ? corrected.value : "";
+        input.style.cssText = inputStyle;
+        const saveBtn = document.createElement("button");
+        saveBtn.className = "small-btn";
+        saveBtn.textContent = "Save correction";
+        saveBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          setFieldCorrection(read.id, read.field_corrections, f.key, input.value.trim() || null);
+        });
+        manualRow.append(input, saveBtn);
+      }
+      row.appendChild(manualRow);
+      return row;
     }
 
     function buildDetailPanel(r) {
@@ -1094,8 +1190,11 @@
           return;
         }
         const dv = f.d ? fmtVal(f.d(t)) : null;
-        const av = f.a ? fmtVal(f.a(read)) : null;
-        if (dv == null && av == null) return; // nothing either side captured — skip the row
+        let av = f.a ? fmtVal(f.a(read)) : null;
+        const flagged = f.key && r._read && fieldIsFlagged(read, f.key);
+        const corrected = f.key ? getFieldCorrection(read, f.key) : null;
+        if (corrected) av = corrected.value + " (corrected)";
+        if (dv == null && av == null && !flagged && !corrected) return; // nothing either side captured, and nothing flagged — skip the row
         const lbl = document.createElement("div");
         lbl.className = "lbl";
         lbl.textContent = f.label;
@@ -1108,6 +1207,13 @@
         grid.appendChild(lbl);
         grid.appendChild(dCell);
         grid.appendChild(aCell);
+
+        // A correction prompt for exactly this field, right where it's
+        // relevant — not a generic list at the bottom the person has to
+        // match back up to the row it concerns.
+        if (f.key && r._read && r._read.id != null && (flagged || corrected)) {
+          grid.appendChild(buildFieldCorrectionRow(r, read, t, f));
+        }
       });
       wrap.appendChild(grid);
 
@@ -1121,74 +1227,6 @@
           showPhoto(r.photoPath, btn);
         });
         wrap.appendChild(btn);
-      }
-
-      // Suggested buyer correction, for when the AI's buyer_name/location
-      // reading is cut off or garbled. The haul's own destination — chosen
-      // by the driver when they started the haul, independent of the photo
-      // — is a more reliable source than trying to match partial digits
-      // against old tickets, so that's what gets suggested. A manual
-      // override stays available underneath for when it isn't right.
-      if (r._read && r._read.id != null && r.destinationName && (r.checkStatus === "review" || r.checkStatus === "reviewed") && (buyerLooksFlagged(r._read) || r._read.buyer_override_name)) {
-        const bcWrap = document.createElement("div");
-        bcWrap.style.cssText = "margin-top:12px;border-top:1px solid var(--border);padding-top:12px;";
-        const heading = document.createElement("div");
-        heading.style.cssText = "font-size:12px;color:var(--text-muted);margin-bottom:6px;";
-        heading.textContent = "Buyer correction";
-        bcWrap.appendChild(heading);
-
-        const suggested = [r.destinationName, r.destinationLocation].filter(Boolean).join(" — ");
-        // Any saved override counts as "already corrected" — not just one
-        // that happens to match the suggestion exactly, so a manual entry
-        // doesn't get stuck showing the suggestion prompt again forever.
-        const alreadyAccepted = !!r._read.buyer_override_name;
-        if (alreadyAccepted) {
-          const note = document.createElement("div");
-          note.className = "meta";
-          note.style.marginBottom = "8px";
-          const correctedText = [r._read.buyer_override_name, r._read.buyer_override_location].filter(Boolean).join(" — ");
-          note.textContent = `Corrected to: ${correctedText}${r._read.buyer_override_at ? " on " + new Date(r._read.buyer_override_at).toLocaleDateString() : ""}`;
-          bcWrap.appendChild(note);
-        } else {
-          const sugRow = document.createElement("div");
-          sugRow.style.cssText = "display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;";
-          const sugText = document.createElement("span");
-          sugText.style.fontSize = "13px";
-          sugText.innerHTML = `Suggested: <span class="ai-val">${escapeHtml(suggested)}</span> <span class="meta">— from this haul's own destination</span>`;
-          sugRow.appendChild(sugText);
-          const acceptBtn = document.createElement("button");
-          acceptBtn.className = "small-btn gold";
-          acceptBtn.textContent = "Accept";
-          acceptBtn.addEventListener("click", (e) => { e.stopPropagation(); setBuyerCorrection(r._read.id, r.destinationName, r.destinationLocation); });
-          sugRow.appendChild(acceptBtn);
-          bcWrap.appendChild(sugRow);
-        }
-
-        const manualRow = document.createElement("div");
-        manualRow.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;align-items:center;";
-        const nameInput = document.createElement("input");
-        nameInput.type = "text";
-        nameInput.placeholder = "Buyer name";
-        nameInput.value = r._read.buyer_override_name || "";
-        nameInput.style.cssText = "font-size:13px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);flex:1;min-width:140px;";
-        const locInput = document.createElement("input");
-        locInput.type = "text";
-        locInput.placeholder = "Location";
-        locInput.value = r._read.buyer_override_location || "";
-        locInput.style.cssText = nameInput.style.cssText;
-        const saveBtn = document.createElement("button");
-        saveBtn.className = "small-btn";
-        saveBtn.textContent = "Save correction";
-        saveBtn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          setBuyerCorrection(r._read.id, nameInput.value.trim() || null, locInput.value.trim() || null);
-        });
-        manualRow.appendChild(nameInput);
-        manualRow.appendChild(locInput);
-        manualRow.appendChild(saveBtn);
-        bcWrap.appendChild(manualRow);
-
-        wrap.appendChild(bcWrap);
       }
 
       // A flagged reading can be marked as checked by a human — it stays
@@ -1236,6 +1274,23 @@
       const { error } = await supabase
         .from("ticket_reads")
         .update({ buyer_override_name: name, buyer_override_location: location, buyer_override_at: new Date().toISOString(), reviewed: true, reviewed_at: new Date().toISOString() })
+        .eq("id", readId);
+      if (error) { alert("Could not save correction: " + error.message); return; }
+      await fetchHauls();
+      render();
+    }
+
+    // Generic version of setBuyerCorrection, for every other field. Merges
+    // into field_corrections client-side from the currently-loaded value
+    // (currentCorrections, straight from the last fetchHauls()) rather than
+    // a read-then-write round trip — fine for a single-admin tool like this.
+    async function setFieldCorrection(readId, currentCorrections, key, value) {
+      const updated = { ...(currentCorrections || {}) };
+      if (value == null || value === "") delete updated[key];
+      else updated[key] = { value, corrected_at: new Date().toISOString() };
+      const { error } = await supabase
+        .from("ticket_reads")
+        .update({ field_corrections: updated, reviewed: true, reviewed_at: new Date().toISOString() })
         .eq("id", readId);
       if (error) { alert("Could not save correction: " + error.message); return; }
       await fetchHauls();

@@ -20,6 +20,19 @@
 const MODEL = "claude-opus-4-8"; // opus-5-5/sonnet-5-5 don't support forced tool_choice (adaptive thinking is always on for them) — 4-8 does, and is still strong for reading a photo
 const STANDARD_LB_PER_BU = { corn: 56, soybeans: 60, oats: 32 };
 
+// Every field a legibility issue can be tagged against. Keeping this list
+// in sync with owner.html's DETAIL_FIELDS `key`s is what lets the review
+// UI prompt for a correction on the SPECIFIC field that was flagged,
+// instead of guessing from free-text wording.
+const FIELD_KEYS = [
+  "ticket_number", "buyer", "ticket_date", "commodity",
+  "gross_lb", "tare_lb", "net_lb", "gross_time", "tare_time",
+  "gross_bu", "shrink_bu", "net_bu",
+  "moisture_pct", "test_weight", "foreign_material_pct", "damage_pct", "heat_damage_pct",
+  "vehicle_id_printed", "bol", "owner_splits", "handwritten_notes",
+  "other", // doesn't map to a specific field (e.g. "not a scale ticket at all")
+];
+
 const SCHEMA = {
   name: "record_scale_ticket",
   description: "Record every field read from the scale ticket photo. Use null for anything not legible or not printed — never guess.",
@@ -60,19 +73,31 @@ const SCHEMA = {
         type: ["object", "null"],
         properties: { present: { type: "boolean" }, date_filled: { type: ["string", "null"] }, signed: { type: ["boolean", "null"] } },
       },
-      legibility_issues: { type: "array", items: { type: "string" } },
+      legibility_issues: {
+        type: "array",
+        description: "One entry per distinct thing you could not confidently read.",
+        items: {
+          type: "object",
+          properties: {
+            field: { type: "string", enum: FIELD_KEYS, description: "The ONE field this issue concerns. Use \"other\" only if it genuinely doesn't map to any field above." },
+            note: { type: "string", description: "Short reason — e.g. 'covered by clip', 'cut off at right edge', 'blurry'." },
+          },
+          required: ["field", "note"],
+        },
+      },
     },
     required: ["legibility_issues"],
   },
 };
 
-const PROMPT = `You are reading a photo of a grain scale ticket taken by a truck driver. Transcribe only what is actually printed or written. If a value is covered, cut off, or genuinely unclear, return null for it and add a short note to legibility_issues; never infer a digit. For ticket_number, return the visible characters and set ticket_number_complete to false if any part is hidden.
+const PROMPT = `You are reading a photo of a grain scale ticket taken by a truck driver. Transcribe only what is actually printed or written. If a value is covered, cut off, or genuinely unclear, return null for it and add an entry to legibility_issues naming the ONE field it concerns and a short reason; never infer a digit. For ticket_number, return the visible characters and set ticket_number_complete to false if any part is hidden.
 
 legibility_issues is ONLY for things you could not confidently read — leave it empty otherwise. It is not a place for routine observations. In particular:
 - The photo may be rotated or angled, may be partly covered by a clipboard clip or fingers, and some buyers (Valero in particular) routinely print two copies of the same ticket on one page. All of this is normal. If both copies are legible, silently read from whichever is clearer — do not mention that there were two copies.
 - Tickets often carry fields with no home in the schema below (an account number, a carrier name, a contract type, etc.). Ignore anything that doesn't fit a field; do not note its absence.
+- Each legibility_issues entry concerns exactly ONE field. If a section of the ticket has several unreadable numbers, add one entry per field (e.g. separate entries for buyer and gross_lb), not one entry describing the whole area.
 
-Copy handwritten notes exactly as written into handwritten_notes. Do not perform any arithmetic yourself — report the numbers as printed. If the photo does not contain a scale ticket at all, return null for every field and say so in legibility_issues.`;
+Copy handwritten notes exactly as written into handwritten_notes. Do not perform any arithmetic yourself — report the numbers as printed. If the photo does not contain a scale ticket at all, return null for every field and add one legibility_issues entry with field "other" saying so.`;
 
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
@@ -170,7 +195,7 @@ module.exports = async function handler(req, res) {
       const sum = read.owner_splits.reduce((s, o) => s + (o.net_lb || 0), 0);
       if (!near(sum, read.net_lb, 1)) problems.push(`owner_splits sum ${sum} != net_lb ${read.net_lb}`);
     }
-    if ((read.legibility_issues || []).length) problems.push(`legibility: ${read.legibility_issues.join("; ")}`);
+    if ((read.legibility_issues || []).length) problems.push(`legibility: ${read.legibility_issues.map((i) => `${i.field}: ${i.note}`).join("; ")}`);
 
     Object.assign(record, read, {
       arithmetic_check: problems.length ? `fail: ${problems.join(" | ")}` : "pass",
