@@ -716,7 +716,8 @@
     }
     function haulSummary(h) {
       if (!h) return "(load not found)";
-      return `${h.driver} · ${h.origin} · ${h.driverNet}`;
+      const ticketPart = h.ticketNumber && h.ticketNumber !== "—" ? `#${h.ticketNumber} · ` : "";
+      return `${ticketPart}${h.driver} · ${h.origin} · ${h.driverNet}`;
     }
 
     // ---------------- Contracts ----------------
