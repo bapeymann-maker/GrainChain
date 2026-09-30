@@ -281,6 +281,7 @@
     const expandedHauls = new Set();
 
     let allDestinations = [];
+    let allPartners = [];
     let allContracts = [];
     let allSettlements = [];
     let contractsLoaded = false, settlementsLoaded = false;
@@ -402,7 +403,7 @@
       if (!contractsLoaded) { await ensureDestinations(); await ensureHauls(); await fetchContracts(); }
     }
     async function ensureSettlements() {
-      if (!settlementsLoaded) { await ensureDestinations(); await ensureHauls(); await fetchSettlements(); }
+      if (!settlementsLoaded) { await ensureDestinations(); await ensureHauls(); await ensurePartners(); await fetchSettlements(); }
     }
     async function ensureLoads() {
       if (allLoads.length === 0) await fetchLoads();
@@ -683,6 +684,9 @@
         return {
           haulId: s.client_id,
           crop: s.crop,
+          originType: s.origin_type,
+          splitPartnerId: s.split_partner_id,
+          splitPct: s.split_pct,
           destinationId: s.destination_id,
           destinationName: destination, // full buyer name — the suggested-correction source for a partially-cut-off AI buyer reading
           destinationLocation: s.destination_location || s.destinations?.location || null, // full location, not the abbreviated destLoc used for display
@@ -729,6 +733,15 @@
     }
     async function ensureHauls() {
       if (!haulsLoaded) await fetchHauls();
+    }
+    async function ensurePartners() {
+      if (allPartners.length) return;
+      const { data, error } = await supabase.from("partners").select("*").order("name");
+      if (!error) allPartners = data || [];
+    }
+    function partnerName(id) {
+      const p = allPartners.find((x) => x.id === id);
+      return p ? p.name : "Partner";
     }
     function destName(id) {
       const d = allDestinations.find((x) => x.id === id);
@@ -777,24 +790,71 @@
       const byContract = new Map();
       (ctRes.data || []).forEach((row) => {
         if (!byContract.has(row.contract_id)) byContract.set(row.contract_id, []);
-        byContract.get(row.contract_id).push(row.shipment_client_id);
+        byContract.get(row.contract_id).push({ id: row.id, shipmentClientId: row.shipment_client_id, bushels: row.bushels });
       });
-      allContracts = (cRes.data || []).map((c) => ({ ...c, assignedHaulIds: byContract.get(c.id) || [] }));
+      // A haul's own list of allocations, across ALL contracts — a load
+      // split between an old contract and a new one shows up here twice.
+      allContracts = (cRes.data || []).map((c) => ({ ...c, assignments: byContract.get(c.id) || [] }));
       contractsLoaded = true;
       statusLine.textContent = `${allContracts.length} contract${allContracts.length === 1 ? "" : "s"}`;
     }
 
-    async function assignToContract(haulId, contractId) {
-      const { error } = await supabase.from("contract_tickets").insert({ contract_id: contractId, shipment_client_id: haulId });
+    // How many bushels of a haul are still unallocated to any contract —
+    // its ticket's full net bushels, minus whatever's already been given
+    // out across every contract's assignments (not just this one).
+    function haulRemainingBushels(h) {
+      const total = (h._ticket && h._ticket.net_bushels) || 0;
+      const allocated = allContracts.reduce(
+        (sum, c) => sum + c.assignments.filter((a) => a.shipmentClientId === h.haulId).reduce((s, a) => s + a.bushels, 0),
+        0
+      );
+      return Math.max(0, total - allocated);
+    }
+
+    async function assignToContract(haulId, contractId, bushels) {
+      const { error } = await supabase.from("contract_tickets").insert({ contract_id: contractId, shipment_client_id: haulId, bushels });
       if (error) { alert("Could not assign: " + error.message); return; }
       await fetchContracts();
       render();
     }
-    async function unassignFromContract(haulId) {
-      const { error } = await supabase.from("contract_tickets").delete().eq("shipment_client_id", haulId);
+    async function unassignFromContract(contractTicketId) {
+      const { error } = await supabase.from("contract_tickets").delete().eq("id", contractTicketId);
       if (error) { alert("Could not remove: " + error.message); return; }
       await fetchContracts();
       render();
+    }
+
+    // A row offering to assign PART OR ALL of a haul's remaining bushels
+    // to this contract — pre-filled with whichever is smaller: what's
+    // left of the haul, or what this contract still needs — but editable,
+    // so a load can be split across two contracts deliberately.
+    function buildAssignRow(h, c, remaining) {
+      const contractNeed = Math.max(0, c.bushels - c.delivered_bushels);
+      const suggested = Math.round(Math.min(remaining, contractNeed || remaining) * 100) / 100;
+
+      const row = document.createElement("div");
+      row.className = "ticket-pick-row";
+      const span = document.createElement("span");
+      span.style.flex = "1";
+      span.textContent = `${haulSummary(h)} — ${remaining.toLocaleString()} bu remaining`;
+      row.appendChild(span);
+      const input = document.createElement("input");
+      input.type = "number";
+      input.step = "any";
+      input.value = suggested || "";
+      input.style.cssText = "width:90px;font-size:13px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);";
+      row.appendChild(input);
+      const btn = document.createElement("button");
+      btn.className = "small-btn gold";
+      btn.textContent = "Assign";
+      btn.addEventListener("click", () => {
+        const amt = Number(input.value);
+        if (!(amt > 0)) { alert("Enter how many bushels to assign."); return; }
+        if (amt > remaining + 0.001) { alert(`Only ${remaining.toLocaleString()} bu of this haul is still unallocated.`); return; }
+        assignToContract(h.haulId, c.id, Math.round(amt * 100) / 100);
+      });
+      row.appendChild(btn);
+      return row;
     }
 
     function renderContracts() {
@@ -803,7 +863,6 @@
         contractsListEl.innerHTML = `<div style="color:var(--text-muted);font-size:13px;">No contracts yet — click "+ Add contract" above.</div>`;
         return;
       }
-      const assignedElsewhere = new Set(allContracts.flatMap((c) => c.assignedHaulIds));
       allContracts.forEach((c) => {
         const pct = c.bushels > 0 ? Math.min(100, Math.round((c.delivered_bushels / c.bushels) * 100)) : 0;
         const expanded = expandedContracts.has(c.id);
@@ -841,24 +900,31 @@
 
           const assignedLabel = document.createElement("div");
           assignedLabel.style.cssText = "font-size:12px;color:var(--text-muted);margin-bottom:6px;";
-          assignedLabel.textContent = `Assigned loads (${c.assignedHaulIds.length})`;
+          assignedLabel.textContent = `Assigned loads (${c.assignments.length})`;
           detail.appendChild(assignedLabel);
-          if (c.assignedHaulIds.length === 0) {
+          if (c.assignments.length === 0) {
             const none = document.createElement("div");
             none.className = "meta";
             none.textContent = "None yet.";
             detail.appendChild(none);
           } else {
-            c.assignedHaulIds.forEach((haulId) => {
-              const h = allHauls.find((x) => x.haulId === haulId);
-              detail.appendChild(pickRow(haulSummary(h), "Remove", () => unassignFromContract(haulId)));
+            c.assignments.forEach((a) => {
+              const h = allHauls.find((x) => x.haulId === a.shipmentClientId);
+              const fullBu = h && h._ticket ? h._ticket.net_bushels : null;
+              // Only spell out "N bu of an M bu ticket" when it's actually
+              // a partial slice — a whole-load allocation just reads as
+              // the normal summary, same as before this feature existed.
+              const label = fullBu != null && Math.abs(fullBu - a.bushels) > 0.001
+                ? `${haulSummary(h)} — ${a.bushels.toLocaleString()} bu of this ${fullBu.toLocaleString()} bu ticket`
+                : haulSummary(h);
+              detail.appendChild(pickRow(label, "Remove", () => unassignFromContract(a.id)));
             });
           }
 
-          const eligible = allHauls.filter((h) => h.checkStatus !== "none" && !assignedElsewhere.has(h.haulId) && eligibleForContract(h, c));
+          const eligible = allHauls.filter((h) => h.checkStatus !== "none" && eligibleForContract(h, c) && haulRemainingBushels(h) > 0.001);
           const pickLabel = document.createElement("div");
           pickLabel.style.cssText = "font-size:12px;color:var(--text-muted);margin:12px 0 6px;";
-          pickLabel.textContent = `Eligible, unassigned loads (${eligible.length})`;
+          pickLabel.textContent = `Eligible loads with bushels remaining (${eligible.length})`;
           detail.appendChild(pickLabel);
           if (eligible.length === 0) {
             const none = document.createElement("div");
@@ -866,7 +932,7 @@
             none.textContent = "None right now.";
             detail.appendChild(none);
           } else {
-            eligible.forEach((h) => detail.appendChild(pickRow(haulSummary(h), "Assign", () => assignToContract(h.haulId, c.id), "gold")));
+            eligible.forEach((h) => detail.appendChild(buildAssignRow(h, c, haulRemainingBushels(h))));
           }
           card.appendChild(detail);
         }
@@ -918,9 +984,9 @@
       const byS = new Map();
       (stRes.data || []).forEach((row) => {
         if (!byS.has(row.settlement_id)) byS.set(row.settlement_id, []);
-        byS.get(row.settlement_id).push(row.shipment_client_id);
+        byS.get(row.settlement_id).push({ id: row.id, shipmentClientId: row.shipment_client_id, elevatorPaidShareOnly: row.elevator_paid_share_only });
       });
-      allSettlements = (sRes.data || []).map((s) => ({ ...s, assignedHaulIds: byS.get(s.id) || [] }));
+      allSettlements = (sRes.data || []).map((s) => ({ ...s, assignments: byS.get(s.id) || [] }));
       settlementsLoaded = true;
       statusLine.textContent = `${allSettlements.length} settlement${allSettlements.length === 1 ? "" : "s"}`;
     }
@@ -931,8 +997,8 @@
       await fetchSettlements();
       render();
     }
-    async function unassignFromSettlement(haulId) {
-      const { error } = await supabase.from("settlement_tickets").delete().eq("shipment_client_id", haulId);
+    async function unassignFromSettlement(settlementTicketId) {
+      const { error } = await supabase.from("settlement_tickets").delete().eq("id", settlementTicketId);
       if (error) { alert("Could not remove: " + error.message); return; }
       await fetchSettlements();
       render();
@@ -944,6 +1010,15 @@
       await fetchSettlements();
       render();
     }
+    // Decided per settlement, not per haul — the same haul could in theory
+    // be assigned differently if it were ever moved to another settlement,
+    // so this lives on the settlement_tickets row, not the haul itself.
+    async function setElevatorPaidShareOnly(settlementTicketId, value) {
+      const { error } = await supabase.from("settlement_tickets").update({ elevator_paid_share_only: value }).eq("id", settlementTicketId);
+      if (error) { alert("Could not update: " + error.message); return; }
+      await fetchSettlements();
+      render();
+    }
 
     function renderSettlements() {
       settlementsListEl.innerHTML = "";
@@ -951,11 +1026,11 @@
         settlementsListEl.innerHTML = `<div style="color:var(--text-muted);font-size:13px;">No settlements yet — click "+ Upload settlement" above.</div>`;
         return;
       }
-      const assignedElsewhere = new Set(allSettlements.flatMap((s) => s.assignedHaulIds));
+      const assignedElsewhere = new Set(allSettlements.flatMap((s) => s.assignments.map((a) => a.shipmentClientId)));
       allSettlements.forEach((s) => {
         const expanded = expandedSettlements.has(s.id);
-        const totalBushels = s.assignedHaulIds.reduce((sum, id) => {
-          const h = allHauls.find((x) => x.haulId === id);
+        const totalBushels = s.assignments.reduce((sum, a) => {
+          const h = allHauls.find((x) => x.haulId === a.shipmentClientId);
           const bu = h && h._ticket ? h._ticket.net_bushels : null;
           return sum + (bu || 0);
         }, 0);
@@ -968,7 +1043,7 @@
         info.style.flex = "1";
         info.innerHTML = `
           <div style="font-weight:600;">${expanded ? "▾" : "▸"} ${escapeHtml(destName(s.destination_id))} <span class="badge ${s.paid ? "badge-paid" : "badge-unpaid"}">${s.paid ? "Paid" : "Unpaid"}</span></div>
-          <div class="meta">${s.settlement_date ? new Date(s.settlement_date).toLocaleDateString() : "No date"}${s.total_amount != null ? " · $" + Number(s.total_amount).toLocaleString() : ""} · ${s.assignedHaulIds.length} load${s.assignedHaulIds.length === 1 ? "" : "s"}${totalBushels ? " · " + totalBushels.toLocaleString() + " bu" : ""}</div>
+          <div class="meta">${s.settlement_date ? new Date(s.settlement_date).toLocaleDateString() : "No date"}${s.total_amount != null ? " · $" + Number(s.total_amount).toLocaleString() : ""} · ${s.assignments.length} load${s.assignments.length === 1 ? "" : "s"}${totalBushels ? " · " + totalBushels.toLocaleString() + " bu" : ""}</div>
         `;
         head.appendChild(info);
         if (s.document_path) {
@@ -1025,17 +1100,55 @@
 
           const assignedLabel = document.createElement("div");
           assignedLabel.style.cssText = "font-size:12px;color:var(--text-muted);margin-bottom:6px;";
-          assignedLabel.textContent = `Loads on this settlement (${s.assignedHaulIds.length})`;
+          assignedLabel.textContent = `Loads on this settlement (${s.assignments.length})`;
           detail.appendChild(assignedLabel);
-          if (s.assignedHaulIds.length === 0) {
+          if (s.assignments.length === 0) {
             const none = document.createElement("div");
             none.className = "meta";
             none.textContent = "None yet.";
             detail.appendChild(none);
           } else {
-            s.assignedHaulIds.forEach((haulId) => {
-              const h = allHauls.find((x) => x.haulId === haulId);
-              detail.appendChild(pickRow(haulSummary(h), "Remove", () => unassignFromSettlement(haulId)));
+            s.assignments.forEach((a) => {
+              const h = allHauls.find((x) => x.haulId === a.shipmentClientId);
+              const row = pickRow(haulSummary(h), "Remove", () => unassignFromSettlement(a.id));
+              // ticket-pick-row is a horizontal flex row (label + button) —
+              // wrap it with the share-crop decision in an outer container
+              // so the decision sits as its OWN block below the row,
+              // rather than getting squeezed in as a third flex column.
+              const container = document.createElement("div");
+              container.appendChild(row);
+              // A load from a share-crop bin needs a decision: did the
+              // elevator's payment already exclude the partner's cut, or
+              // did we get paid for the whole thing (meaning we owe them)?
+              if (h && h.splitPartnerId) {
+                const shareWrap = document.createElement("div");
+                shareWrap.style.cssText = "margin:-4px 0 8px;padding:8px 10px;border-left:2px solid var(--gold);font-size:12px;";
+                const label = document.createElement("div");
+                label.className = "meta";
+                label.style.marginBottom = "6px";
+                label.textContent = `Share-crop load — ${partnerName(h.splitPartnerId)}'s share: ${h.splitPct}%`;
+                shareWrap.appendChild(label);
+                const btnRow = document.createElement("div");
+                btnRow.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;";
+                const optShareOnly = document.createElement("button");
+                optShareOnly.className = `small-btn${a.elevatorPaidShareOnly === true ? " gold" : ""}`;
+                optShareOnly.textContent = "Elevator paid our share only";
+                optShareOnly.addEventListener("click", () => setElevatorPaidShareOnly(a.id, true));
+                const optFull = document.createElement("button");
+                optFull.className = `small-btn${a.elevatorPaidShareOnly === false ? " gold" : ""}`;
+                optFull.textContent = "We got paid the whole load";
+                optFull.addEventListener("click", () => setElevatorPaidShareOnly(a.id, false));
+                btnRow.append(optShareOnly, optFull);
+                shareWrap.appendChild(btnRow);
+                if (a.elevatorPaidShareOnly == null) {
+                  const note = document.createElement("div");
+                  note.style.cssText = "color:#E2812B;margin-top:6px;";
+                  note.textContent = "Not decided yet — check the settlement sheet.";
+                  shareWrap.appendChild(note);
+                }
+                container.appendChild(shareWrap);
+              }
+              detail.appendChild(container);
             });
           }
 
@@ -1122,16 +1235,29 @@
     async function renderDashboard() {
       const bounds = periodBounds(dashboardPeriod);
 
-      // ---- Production (Field to Bin) by crop, in period ----
+      // ---- Production ("brought in from fields") by crop, in period.
+      // Two sources: field-to-bin loads (the usual path), AND hauls that
+      // went straight from a field to a buyer, skipping the bin entirely
+      // (Deliveries' "From a field" option) — those bushels never appear
+      // in `loads` at all, so without this they'd silently vanish from
+      // Production while still counting on the Delivered side. ----
       const production = {}; // crop -> { total, byStatus }
+      function addProduction(crop, status, bu) {
+        const c = crop || "Unknown";
+        if (!production[c]) production[c] = { total: 0, byStatus: {} };
+        production[c].total += bu;
+        const st = status || "unknown";
+        production[c].byStatus[st] = (production[c].byStatus[st] || 0) + bu;
+      }
       allLoads.forEach((l) => {
         if (!inPeriod(l.logged_at, bounds)) return;
-        const crop = l.crop_raw || "Unknown";
-        const bu = toBushels(l);
-        if (!production[crop]) production[crop] = { total: 0, byStatus: {} };
-        production[crop].total += bu;
-        const st = l.status || "unknown";
-        production[crop].byStatus[st] = (production[crop].byStatus[st] || 0) + bu;
+        addProduction(l.crop_raw, l.status, toBushels(l));
+      });
+      allHauls.forEach((h) => {
+        if (h.originType !== "field") return; // bin-origin hauls came FROM a loads row already counted above
+        if (h.checkStatus === "none") return; // no ticket yet — nothing to count
+        if (!inPeriod(h.departed_at, bounds)) return;
+        addProduction(h.crop, h.originStatus, (h._ticket && h._ticket.net_bushels) || 0);
       });
 
       // ---- Delivered (Hauled Out) by crop, in period ----
@@ -1158,17 +1284,28 @@
       // Estimated $ for hauls delivered in this period, priced only where a
       // contract is actually assigned — an unassigned load has no reliable
       // price in this system, so it's counted separately, not guessed at.
-      const { data: ctRows, error: ctErr } = await supabase.from("contract_tickets").select("shipment_client_id, contract_id");
-      const contractByHaul = new Map((ctRows || []).map((row) => [row.shipment_client_id, row.contract_id]));
+      // A haul can now be SPLIT across more than one contract (e.g. Valero
+      // closing out an old contract with part of a load and applying the
+      // rest to a new one) — so this prices each allocation at ITS OWN
+      // contract's rate, rather than assuming one contract per haul.
+      const { data: ctRows, error: ctErr } = await supabase.from("contract_tickets").select("shipment_client_id, contract_id, bushels");
+      const allocationsByHaul = new Map();
+      (ctRows || []).forEach((row) => {
+        if (!allocationsByHaul.has(row.shipment_client_id)) allocationsByHaul.set(row.shipment_client_id, []);
+        allocationsByHaul.get(row.shipment_client_id).push({ contractId: row.contract_id, bushels: row.bushels });
+      });
       const contractPriceById = new Map(allContracts.map((c) => [c.id, c.cash_price]));
       let estimatedAmount = 0, unpricedBushels = 0, unpricedCount = 0;
       const haulsInPeriod = allHauls.filter((h) => h.checkStatus !== "none" && inPeriod(h.departed_at, bounds));
       haulsInPeriod.forEach((h) => {
-        const bu = (h._ticket && h._ticket.net_bushels) || 0;
-        const contractId = contractByHaul.get(h.haulId);
-        const price = contractId != null ? contractPriceById.get(contractId) : null;
-        if (price != null) estimatedAmount += bu * price;
-        else { unpricedBushels += bu; unpricedCount++; }
+        const totalBu = (h._ticket && h._ticket.net_bushels) || 0;
+        let pricedBu = 0;
+        (allocationsByHaul.get(h.haulId) || []).forEach((a) => {
+          const price = contractPriceById.get(a.contractId);
+          if (price != null) { estimatedAmount += a.bushels * price; pricedBu += a.bushels; }
+        });
+        const unpriced = Math.max(0, totalBu - pricedBu); // unallocated remainder, or allocated to a contract with no price set
+        if (unpriced > 0.001) { unpricedBushels += unpriced; unpricedCount++; }
       });
 
       // ---- Contracts (current state — not period-scoped) ----
@@ -1183,7 +1320,7 @@
       const statusLine = (byStatus) => Object.entries(byStatus).map(([st, bu]) => `${st}: ${fmtBu(bu)}`).join(" · ") || "—";
       const periodLabel = { day: "today", week: "the last 7 days", month: "the last 30 days", ytd: "year to date" }[dashboardPeriod];
 
-      let html = `<div class="dash-section-title">Production vs. delivered — ${escapeHtml(periodLabel)}</div>`;
+      let html = `<div class="dash-section-title">Brought in from fields vs. delivered — ${escapeHtml(periodLabel)}</div>`;
       if (crops.length === 0) {
         html += `<div style="color:var(--text-muted);font-size:13px;margin-bottom:20px;">Nothing recorded in this period.</div>`;
       } else {
@@ -1195,12 +1332,12 @@
           html += `
             <div class="dash-card">
               <div class="dash-card-title">${escapeHtml(crop)}</div>
-              <div class="dash-stat-row"><span>Produced </span><span class="driver-val">${fmtBu(prod.total)}</span></div>
+              <div class="dash-stat-row"><span>Brought in </span><span class="driver-val">${fmtBu(prod.total)}</span></div>
               <div class="meta" style="margin-bottom:8px;">${escapeHtml(statusLine(prod.byStatus))}</div>
               <div class="dash-stat-row"><span>Delivered </span><span class="ai-val">${fmtBu(del.total)}</span></div>
               <div class="meta" style="margin-bottom:8px;">${escapeHtml(statusLine(del.byStatus))}</div>
               <div class="progress-track"><div class="progress-fill" style="width:${pct}%;"></div></div>
-              <div class="meta">${pct}% of production delivered</div>
+              <div class="meta">${pct}% of what came in has been delivered</div>
             </div>`;
         });
         html += `</div>`;
@@ -1227,6 +1364,64 @@
           </div>
         </div>`;
 
+      // ---- Share-crop: what's owed to each partner, current state.
+      // Only counts loads flagged "we got paid the whole load" (the
+      // elevator didn't apply the split) — a load where the elevator DID
+      // pay out net of the partner's share owes nothing further. A
+      // settlement's dollar figure covers several loads at once, so a
+      // single load's value is estimated by prorating that settlement's
+      // total by bushels — same honesty as the "Estimated" dollar figure
+      // above, not treated as exact. "Since last settled" uses each
+      // settlement's own date against the partner's most recent
+      // partner_settlements entry (there's no per-payment ledger here —
+      // Ben confirmed this gets netted against other things like manure
+      // and trucking outside the system, so just a running total + a
+      // reset point is enough). ----
+      const { data: psRows, error: psErr } = await supabase.from("partner_settlements").select("*").order("settled_at", { ascending: false });
+      const lastSettledByPartner = new Map();
+      (psRows || []).forEach((row) => {
+        const cur = lastSettledByPartner.get(row.partner_id);
+        if (!cur || row.settled_at > cur) lastSettledByPartner.set(row.partner_id, row.settled_at);
+      });
+      const owedByPartner = new Map(); // partnerId -> { owed, undecidedCount }
+      allSettlements.forEach((s) => {
+        const settlementBushels = s.assignments.reduce((sum, a) => {
+          const h = allHauls.find((x) => x.haulId === a.shipmentClientId);
+          return sum + ((h && h._ticket && h._ticket.net_bushels) || 0);
+        }, 0);
+        s.assignments.forEach((a) => {
+          const h = allHauls.find((x) => x.haulId === a.shipmentClientId);
+          if (!h || !h.splitPartnerId) return;
+          const lastSettled = lastSettledByPartner.get(h.splitPartnerId);
+          // Cutoff is the settlement's uploaded_at (when it was actually
+          // entered into GrainChain) rather than settlement_date (a date
+          // the user types in from the paper, with no reliable
+          // relationship to "now") — "mark settled" means "everything on
+          // file as of right now," and uploaded_at is what's actually
+          // guaranteed to fall before or after that moment.
+          if (lastSettled && s.uploaded_at && new Date(s.uploaded_at) <= new Date(lastSettled)) return; // already covered by a prior "mark settled"
+          if (!owedByPartner.has(h.splitPartnerId)) owedByPartner.set(h.splitPartnerId, { owed: 0, undecidedCount: 0 });
+          const entry = owedByPartner.get(h.splitPartnerId);
+          if (a.elevatorPaidShareOnly == null) { entry.undecidedCount++; return; }
+          if (a.elevatorPaidShareOnly === true) return; // elevator already excluded the partner's share — nothing further owed
+          const bu = (h._ticket && h._ticket.net_bushels) || 0;
+          const haulValue = settlementBushels > 0 && s.total_amount != null ? (bu / settlementBushels) * s.total_amount : 0;
+          entry.owed += haulValue * (h.splitPct / 100);
+        });
+      });
+      let partnerCardsHtml = "";
+      allPartners.forEach((p) => {
+        const entry = owedByPartner.get(p.id);
+        if (!entry || (entry.owed <= 0.01 && entry.undecidedCount === 0)) return;
+        partnerCardsHtml += `
+          <div class="dash-card">
+            <div class="dash-card-title">Owed to ${escapeHtml(p.name)}</div>
+            <div class="dash-big-num">${fmtUsd(entry.owed)}</div>
+            <div class="meta">${entry.undecidedCount > 0 ? `${entry.undecidedCount} load${entry.undecidedCount === 1 ? "" : "s"} still need${entry.undecidedCount === 1 ? "s" : ""} a decision — see Settlements` : "estimated, prorated by bushels within each settlement"}</div>
+            ${entry.owed > 0.01 ? `<button class="small-btn gold" style="margin-top:8px;" data-mark-settled="${p.id}" data-owed="${entry.owed}">Mark settled</button>` : ""}
+          </div>`;
+      });
+
       html += `
         <div class="dash-section-title" style="margin-top:24px;">Right now</div>
         <div class="dash-grid">
@@ -1245,11 +1440,22 @@
             <div class="dash-big-num">${reviewQueueCount}</div>
             <div class="meta">flagged, not yet marked reviewed</div>
           </div>
+          ${partnerCardsHtml}
         </div>`;
 
       if (ctErr) html += `<div style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load contract assignments for the dollar estimate: ${escapeHtml(ctErr.message)}</div>`;
+      if (psErr) html += `<div style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load partner settlement history: ${escapeHtml(psErr.message)}</div>`;
 
       dashContentEl.innerHTML = html;
+      dashContentEl.querySelectorAll("[data-mark-settled]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const partnerId = Number(btn.dataset.markSettled);
+          const amount = Number(btn.dataset.owed);
+          const { error } = await supabase.from("partner_settlements").insert({ partner_id: partnerId, amount });
+          if (error) { alert("Could not mark settled: " + error.message); return; }
+          await renderDashboard();
+        });
+      });
     }
 
     function fmtVal(v) {

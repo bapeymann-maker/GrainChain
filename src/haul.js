@@ -761,6 +761,12 @@ export function createHaul(ctx) {
         crop: haul.crop,
         binStatus: bin ? bin.status || null : null,
         originStatus: (isField ? field.status : bin.status) || null,
+        // Snapshotted at departure, same reasoning as originStatus above —
+        // a bin's split toggle changing later (new season, different
+        // arrangement) can't retroactively change what already left.
+        // Field-direct hauls have no bin, so no split applies.
+        splitPartnerId: bin ? bin.split_partner_id || null : null,
+        splitPct: bin ? bin.split_pct || null : null,
         destinationId: haul.destCustom ? null : haul.destId,
         destinationName: haul.destCustom ? haul.destName : null,
         destinationLocation: haul.destCustom ? haul.destLocation || null : null,

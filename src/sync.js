@@ -209,6 +209,8 @@ function toShipmentRow(s) {
     crop: s.crop ?? null,
     bin_status: s.binStatus ?? null,
     origin_status: s.originStatus ?? null,
+    split_partner_id: s.splitPartnerId ?? null,
+    split_pct: s.splitPct ?? null,
     destination_id: s.destinationId ?? null,
     destination_name: s.destinationName ?? null,
     destination_location: s.destinationLocation ?? null,

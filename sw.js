@@ -4,7 +4,7 @@
 // by db.js/sync.js via IndexedDB — this service worker is only responsible
 // for making sure the app itself always loads.
 
-const CACHE_NAME = "kiosk-shell-v22";
+const CACHE_NAME = "kiosk-shell-v23";
 const SHELL_FILES = [
   "/index.html",
   "/manifest.json",
