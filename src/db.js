@@ -14,7 +14,10 @@
 // Each queue record has synced: false until sync.js confirms it landed.
 
 const DB_NAME = "ufer_kiosk";
-const DB_VERSION = 2; // v2 adds shipments + tickets
+const DB_VERSION = 3; // v3 adds ticket_draft — recovers an in-progress scale
+// ticket (fields + photo) if the OS reloads the page while the camera is
+// open, which on some phones reclaims the browser's memory mid-capture
+// and wipes anything that only lived in JS state.
 
 let dbPromise = null;
 
@@ -43,6 +46,9 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains("tickets")) {
         db.createObjectStore("tickets", { keyPath: "localId", autoIncrement: true });
+      }
+      if (!db.objectStoreNames.contains("ticket_draft")) {
+        db.createObjectStore("ticket_draft", { keyPath: "key" });
       }
     };
 
@@ -186,6 +192,44 @@ export async function markTicketSynced(localId) {
 export async function markTicketPhotoUploaded(localId) {
   // Drop the Blob once it's safely uploaded so it doesn't sit in storage.
   return patchRecord("tickets", localId, { photoUploaded: true, photo: null });
+}
+
+// --- In-progress scale ticket draft ---
+// One row, always overwritten (key is always "current"). Saved right
+// before the camera/photo picker opens, and again once a photo is
+// attached — the two moments most likely to be followed by the page
+// coming back as a reload instead of resuming. Cleared once the ticket
+// is actually queued, or the driver explicitly discards it.
+const DRAFT_KEY = "current";
+
+export async function saveTicketDraft(draft) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("ticket_draft", "readwrite");
+    const req = tx.objectStore("ticket_draft").put({ ...draft, key: DRAFT_KEY, savedAt: new Date().toISOString() });
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function getTicketDraft() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("ticket_draft", "readonly");
+    const req = tx.objectStore("ticket_draft").get(DRAFT_KEY);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function clearTicketDraft() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("ticket_draft", "readwrite");
+    const req = tx.objectStore("ticket_draft").delete(DRAFT_KEY);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
 }
 
 // Everything still waiting to reach Supabase — drives the "N queued" badge.

@@ -10,7 +10,7 @@
 // Kept separate from app.js so the field-delivery flow is untouched.
 // app.js hands us its state and UI helpers via createHaul(ctx).
 
-import { queueShipment, queueTicket, getAllShipments, getAllTickets } from "./db.js";
+import { queueShipment, queueTicket, getAllShipments, getAllTickets, saveTicketDraft, getTicketDraft, clearTicketDraft } from "./db.js";
 import { syncSoon } from "./sync.js";
 
 const CROPS = ["Corn", "Soybeans", "Oats"];
@@ -82,6 +82,7 @@ export function createHaul(ctx) {
     photoBusy: false,
     hadPhoto: false,
     priorPhotoPath: null,
+    recoveredNotice: null,
     error: "",
     saving: false,
   };
@@ -897,10 +898,84 @@ export function createHaul(ctx) {
       photoBusy: false,
       hadPhoto: !!(x.photo_path || x.local_photo),
       priorPhotoPath: x.photo_path || null,
+      recoveredNotice: null,
       error: "",
       saving: false,
     });
     setState({ screen: "haulTicket" });
+  }
+
+  // Saved right before the camera/library picker opens, and again once a
+  // photo is attached — on some phones, opening the camera makes the OS
+  // reclaim the browser's memory, and coming back is a full page reload
+  // that wipes anything only held in JS state. This survives that.
+  async function saveDraftNow() {
+    if (!ticket.shipment || !ticket.shipment.client_id) return;
+    try {
+      await saveTicketDraft({
+        shipmentClientId: ticket.shipment.client_id,
+        number: ticket.number,
+        gross: ticket.gross,
+        tare: ticket.tare,
+        net: ticket.net,
+        bushels: ticket.bushels,
+        moisture: ticket.moisture,
+        testWeight: ticket.testWeight,
+        notes: ticket.notes,
+        photo: ticket.photo || null,
+        hadPhoto: ticket.hadPhoto,
+        priorPhotoPath: ticket.priorPhotoPath,
+      });
+    } catch (err) {
+      console.warn("Could not save ticket draft", err);
+    }
+  }
+
+  // Called once after login. If the page reloaded mid-ticket-entry, this
+  // puts the driver straight back into it — fields and photo intact —
+  // instead of losing everything and starting over at Home.
+  async function restoreDraftIfAny() {
+    let draft;
+    try {
+      draft = await getTicketDraft();
+    } catch (err) {
+      console.warn("Could not check for a saved ticket draft", err);
+      return false;
+    }
+    if (!draft) return false;
+
+    await refreshLocal(true);
+    let match = mergedHauls().find((h) => h.client_id === draft.shipmentClientId);
+    if (!match) {
+      // Haul not found locally yet (usually just hasn't synced back to
+      // this device's view). Still recover the typed data and photo with
+      // a safe stand-in so nothing is lost, even without the usual
+      // haul-summary details.
+      match = {
+        client_id: draft.shipmentClientId,
+        trailer: "", truck: null, origin_type: "bin", bin_id: null, field_id: null,
+        destination_id: null, destination_name: "(haul details unavailable)", destination_location: "",
+        crop: null, departed_at: null,
+      };
+    }
+    openTicket(match);
+    Object.assign(ticket, {
+      number: draft.number || "",
+      gross: draft.gross || "",
+      tare: draft.tare || "",
+      net: draft.net || "",
+      bushels: draft.bushels || "",
+      moisture: draft.moisture || "",
+      testWeight: draft.testWeight || "",
+      notes: draft.notes || "",
+      photo: draft.photo || null,
+      photoUrl: draft.photo ? URL.createObjectURL(draft.photo) : null,
+      hadPhoto: draft.hadPhoto || false,
+      priorPhotoPath: draft.priorPhotoPath || null,
+      recoveredNotice: "Recovered an in-progress scale ticket — check the details below and save when ready.",
+    });
+    setState({ screen: "haulTicket" });
+    return true;
   }
 
   async function choosePhoto(file) {
@@ -918,6 +993,7 @@ export function createHaul(ctx) {
     ticket.photoBusy = false;
     ticket.error = "";
     rerender();
+    await saveDraftNow(); // capture the photo to the draft right away, in case the NEXT thing that happens is a reload
   }
 
   function ticketScreen() {
@@ -928,6 +1004,9 @@ export function createHaul(ctx) {
       return wrap;
     }
     add(wrap, title("Scale ticket"));
+    if (ticket.recoveredNotice) {
+      add(wrap, h("div", { style: `font-size:13px;color:${COLORS.gold};background:${COLORS.goldDark};border-radius:8px;padding:10px 12px;` }, ticket.recoveredNotice));
+    }
     add(
       wrap,
       h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-top:-8px;` }, [
@@ -1011,7 +1090,7 @@ export function createHaul(ctx) {
           tone: ticket.photoUrl || ticket.hadPhoto ? "default" : "gold",
           disabled: ticket.photoBusy,
           sub: ticket.photoUrl ? "Photo attached — saves with the ticket" : ticket.hadPhoto ? "Already on file — tap to replace it" : "Required",
-          onClick: () => cameraInput.click(),
+          onClick: async () => { await saveDraftNow(); cameraInput.click(); },
         }
       )
     );
@@ -1020,7 +1099,7 @@ export function createHaul(ctx) {
       bigButton("Choose from library", {
         disabled: ticket.photoBusy,
         sub: "Pick an existing photo instead of the camera",
-        onClick: () => libraryInput.click(),
+        onClick: async () => { await saveDraftNow(); libraryInput.click(); },
       })
     );
     if (ticket.photoUrl) {
@@ -1092,6 +1171,7 @@ export function createHaul(ctx) {
       if (ticket.photoUrl) URL.revokeObjectURL(ticket.photoUrl);
       ticket.photo = null;
       ticket.photoUrl = null;
+      clearTicketDraft().catch((err) => console.warn("Could not clear ticket draft", err));
       setState({ screen: "haulDone" });
       syncSoon();
     } catch (err) {
@@ -1112,6 +1192,7 @@ export function createHaul(ctx) {
   return {
     refreshLocal,
     needsTicketCount,
+    restoreDraftIfAny,
     screens: {
       haulTrailer: trailerScreen,
       haulOrigin: originScreen,

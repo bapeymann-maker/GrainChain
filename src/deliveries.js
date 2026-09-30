@@ -113,13 +113,22 @@ function loginScreen() {
       state.pinError = "";
     },
   });
-  const submit = () => {
+  const submit = async () => {
     const match = state.workers.find((w) => w.pin === state.pin && w.active !== false);
     if (!match) {
       setState({ pinError: "PIN not recognized. Try again." });
       return;
     }
-    setState({ worker: match, pin: "", pinError: "", screen: "home" });
+    state.worker = match;
+    state.pin = "";
+    state.pinError = "";
+    // If the page reloaded mid-ticket-entry (some phones do this when the
+    // camera opens), this jumps straight back into that ticket — fields
+    // and photo intact — instead of dropping the driver at Home having
+    // lost everything. restoreDraftIfAny() calls setState itself when it
+    // finds one, so only fall back to Home when there's nothing to recover.
+    const recovered = await haul.restoreDraftIfAny();
+    if (!recovered) setState({ screen: "home" });
   };
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") submit();
