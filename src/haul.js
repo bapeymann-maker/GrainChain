@@ -1023,10 +1023,17 @@ export function createHaul(ctx) {
 
     const field = (text, key, opts = {}) => {
       const numeric = opts.numeric !== false;
+      // inputMode controls which on-screen keyboard shows up; numeric
+      // controls whether non-digit characters actually get stripped as
+      // the driver types. These used to always move together, but
+      // ticket numbers need the numeric keypad for speed WITHOUT the
+      // filter — some buyers' tickets carry letters (e.g. Meuret's "DAK
+      // 61431"), and stripping those would silently corrupt the entry.
+      const inputMode = opts.inputMode || (numeric ? "decimal" : "text");
       return h("div", { style: "display:flex;flex-direction:column;gap:6px;flex:1;min-width:0;" }, [
         label(text),
         h("input", {
-          inputmode: numeric ? "decimal" : "text",
+          inputmode: inputMode,
           placeholder: opts.placeholder || "",
           value: ticket[key],
           style: inputStyle,
@@ -1039,7 +1046,7 @@ export function createHaul(ctx) {
     };
     const row = (...kids) => h("div", { style: "display:flex;gap:10px;" }, kids);
 
-    add(wrap, row(field("Ticket number *", "number", { numeric: false })));
+    add(wrap, row(field("Ticket number *", "number", { numeric: false, inputMode: "numeric" })));
     add(wrap, row(field("Net bushels *", "bushels")));
     add(
       wrap,
