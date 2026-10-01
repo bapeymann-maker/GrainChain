@@ -163,6 +163,13 @@ const state = {
   dryerStartForm: { sourceBinId: "", destBinId: "", crop: "", status: "", wetPctIn: "", dryPctOut: "", dryTemp: "", midgrainTemp: "", dischargeRate: "", plenumTemp: "", notes: "" },
   dryerReadingForm: { wetPctIn: "", dryPctOut: "", dryTemp: "", midgrainTemp: "", dischargeRate: "", plenumTemp: "", notes: "" },
   dryerStopForm: { actualBushels: "", notes: "" },
+  // Mandatory-field validation for discharge rate can't be a disabled
+  // button — the numeric fields deliberately skip re-rendering on input
+  // (to avoid losing focus mid-keystroke), so a disabled state computed
+  // at render time would go stale the instant the operator finished
+  // typing. Validated on submit instead, same pattern as weightError
+  // above.
+  dryerFormError: "",
 };
 
 let root = null;
@@ -896,6 +903,8 @@ function topBar() {
 // ---------------------------------------------------------------------
 
 const DRYER_NAMES = ["Tower Dryer", "Super B"];
+const DRYER_CROPS = ["Corn", "Oats"]; // dryer flow only — the field-delivery CROPS list above is unrelated and unchanged
+const SUPER_B_SOURCE_BIN_ID = "HOME-10"; // Super B only ever draws from bin 10 — no picker, hardcoded
 
 function numField(label, placeholder, getValue, setValue) {
   const wrap = h("div", { style: "display:flex;flex-direction:column;gap:4px;" });
@@ -966,8 +975,21 @@ function dryerHomeScreen() {
           tone: "gold",
           onClick: () => {
             state.dryerCurrent = dryerName;
-            state.dryerStartForm = { sourceBinId: "", destBinId: "", crop: "", status: "" };
-            setState({ screen: "dryerStart" });
+            state.dryerStartForm = {
+              // Super B only ever draws from bin 10 — hardcoded, no picker.
+              sourceBinId: dryerName === "Super B" ? SUPER_B_SOURCE_BIN_ID : "",
+              destBinId: "",
+              crop: "",
+              status: "",
+              wetPctIn: "",
+              dryPctOut: "",
+              dryTemp: "",
+              midgrainTemp: "",
+              dischargeRate: "",
+              plenumTemp: "",
+              notes: "",
+            };
+            setState({ screen: "dryerStart", dryerFormError: "" });
           },
         })
       );
@@ -996,8 +1018,21 @@ function dryerHomeScreen() {
               tone: "gold",
               onClick: () => {
                 state.dryerCurrent = dryerName;
-                state.dryerReadingForm = { wetPctIn: "", dryPctOut: "", dryTemp: "", midgrainTemp: "", dischargeRate: "", plenumTemp: "", notes: "" };
-                setState({ screen: "dryerReading" });
+                // Discharge rate defaults to this run's own most recent
+                // entry — the operator is usually confirming "still the
+                // same" rather than retyping it fresh every check.
+                const priorReadings = state.dryerReadings.filter((rd) => rd.runClientId === active.runClientId).sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt));
+                const lastRate = priorReadings[0]?.dischargeRate;
+                state.dryerReadingForm = {
+                  wetPctIn: "",
+                  dryPctOut: "",
+                  dryTemp: "",
+                  midgrainTemp: "",
+                  dischargeRate: lastRate != null ? String(lastRate) : "",
+                  plenumTemp: "",
+                  notes: "",
+                };
+                setState({ screen: "dryerReading", dryerFormError: "" });
               },
             }),
           ]),
@@ -1025,26 +1060,33 @@ function dryerStartScreen() {
   wrap.appendChild(h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.text};` }, `Start run — ${state.dryerCurrent}`));
   const f = state.dryerStartForm;
 
-  wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-bottom:-4px;` }, "From (wet bin)"));
-  const wetBins = state.bins.filter((b) => b.bin_type === "wet" && b.active !== false);
-  const sourceGrid = h("div", { style: "display:grid;grid-template-columns:repeat(3,1fr);gap:8px;" });
-  wetBins.forEach((b) => {
-    const selected = f.sourceBinId === b.id;
-    sourceGrid.appendChild(
-      h(
-        "button",
-        {
-          style: `${BODY}padding:14px 8px;border-radius:10px;border:1px solid ${selected ? COLORS.gold : COLORS.border};background:${selected ? COLORS.goldDark : COLORS.panelAlt};color:${selected ? COLORS.gold : COLORS.text};font-size:15px;font-weight:700;cursor:pointer;text-align:center;`,
-          onclick: () => setState({ dryerStartForm: { ...f, sourceBinId: b.id } }),
-        },
-        b.name
-      )
-    );
-  });
-  wrap.appendChild(sourceGrid);
+  if (state.dryerCurrent === "Super B") {
+    // Super B only ever draws from bin 10 — no picker; sourceBinId was
+    // already hardcoded to it the moment "Start run" was tapped.
+    wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};` }, `From: Bin 10 (fixed — Super B always draws from here)`));
+  } else {
+    wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-bottom:-4px;` }, "From (wet bin)"));
+    const wetBins = state.bins.filter((b) => b.bin_type === "wet" && b.active !== false);
+    const sourceGrid = h("div", { style: "display:grid;grid-template-columns:repeat(3,1fr);gap:8px;" });
+    wetBins.forEach((b) => {
+      const selected = f.sourceBinId === b.id;
+      sourceGrid.appendChild(
+        h(
+          "button",
+          {
+            style: `${BODY}padding:14px 8px;border-radius:10px;border:1px solid ${selected ? COLORS.gold : COLORS.border};background:${selected ? COLORS.goldDark : COLORS.panelAlt};color:${selected ? COLORS.gold : COLORS.text};font-size:15px;font-weight:700;cursor:pointer;text-align:center;`,
+            onclick: () => setState({ dryerStartForm: { ...f, sourceBinId: b.id } }),
+          },
+          b.name
+        )
+      );
+    });
+    wrap.appendChild(sourceGrid);
+  }
 
   wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-bottom:-4px;` }, "To (dry bin)"));
-  const dryBins = state.bins.filter((b) => b.bin_type !== "wet" && b.active !== false);
+  // Home farm bins only, plus Reclaim Bin — see add-reclaim-bin.sql.
+  const dryBins = state.bins.filter((b) => b.bin_type !== "wet" && b.site === "HOME" && b.active !== false);
   const destGrid = h("div", { style: "display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-height:220px;overflow-y:auto;" });
   dryBins.forEach((b) => {
     const selected = f.destBinId === b.id;
@@ -1063,7 +1105,7 @@ function dryerStartScreen() {
 
   wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-bottom:-4px;` }, "Crop"));
   const cropRow = h("div", { style: "display:flex;gap:8px;" });
-  CROPS.forEach((crop) => {
+  DRYER_CROPS.forEach((crop) => {
     cropRow.appendChild(
       h(
         "button",
@@ -1127,14 +1169,24 @@ function dryerStartScreen() {
     )
   );
 
+  // destBinId/crop/status are all button-driven (setState re-renders
+  // live), so disabling on those is safe and responsive. dischargeRate is
+  // a text field — see dryerFormError above for why that's validated on
+  // submit instead of baked into this disabled state.
   const ready = f.destBinId && f.crop && f.status;
   wrap.appendChild(bigButton("Start run", { tone: "gold", disabled: !ready, onClick: startDryerRun }));
+  if (state.dryerFormError) wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.danger};` }, state.dryerFormError));
   wrap.appendChild(linkButton("← Back", () => setState({ screen: "dryerHome" })));
   return wrap;
 }
 
 async function startDryerRun() {
   const f = state.dryerStartForm;
+  if (f.dischargeRate === "" || f.dischargeRate == null) {
+    setState({ dryerFormError: "Enter the discharge rate before starting — the bushel estimate is built from it." });
+    return;
+  }
+  state.dryerFormError = "";
   const dryerName = state.dryerCurrent;
   const startedAt = new Date().toISOString();
   const active = {
@@ -1214,6 +1266,7 @@ function dryerReadingScreen() {
   );
 
   wrap.appendChild(bigButton("Save reading", { tone: "gold", onClick: saveDryerReading }));
+  if (state.dryerFormError) wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.danger};` }, state.dryerFormError));
 
   const readingsForThisRun = state.dryerReadings.filter((r) => r.runClientId === active.runClientId).sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt));
   if (readingsForThisRun.length) {
@@ -1237,9 +1290,14 @@ function dryerReadingScreen() {
 }
 
 async function saveDryerReading() {
+  const f = state.dryerReadingForm;
+  if (f.dischargeRate === "" || f.dischargeRate == null) {
+    setState({ dryerFormError: "Enter the discharge rate before saving — the bushel estimate is built from it." });
+    return;
+  }
+  state.dryerFormError = "";
   const dryerName = state.dryerCurrent;
   const active = state.dryerActive[dryerName];
-  const f = state.dryerReadingForm;
   const reading = {
     runClientId: active.runClientId,
     dryerName,
