@@ -1443,8 +1443,47 @@
           ${partnerCardsHtml}
         </div>`;
 
+      // ---- Bin inventory — right now, not period-scoped. Reads
+      // bin_levels directly, the same live-computed view Deliveries
+      // already uses for bin selection, so these numbers match exactly
+      // what a driver sees when picking a bin. Sorted client-side rather
+      // than relying on the query's own ordering. ----
+      const { data: binRows, error: binErr } = await supabase.from("bin_levels").select("*");
+      const activeBins = (binRows || []).filter((b) => b.active !== false).sort((a, b) => (a.site || "").localeCompare(b.site || "") || (a.name || "").localeCompare(b.name || ""));
+      const binRowsHtml = activeBins
+        .map((b) => {
+          const pct = b.pct || 0;
+          const statusCell = b.status ? `<span class="badge badge-${b.status}">${escapeHtml(b.status)}</span>` : "—";
+          const splitCell = b.split_partner_id ? `${escapeHtml(partnerName(b.split_partner_id))} ${b.split_pct}%` : "—";
+          return `
+            <tr>
+              <td>${escapeHtml(b.site || "—")}</td>
+              <td>${escapeHtml(b.name || "—")}</td>
+              <td>${escapeHtml(b.crop || "—")}</td>
+              <td>${statusCell}</td>
+              <td>${splitCell}</td>
+              <td>${Number(b.bushels_in_bin || 0).toLocaleString()} bu</td>
+              <td>${b.capacity_k_bu != null ? (b.capacity_k_bu * 1000).toLocaleString() + " bu" : "—"}</td>
+              <td><div class="progress-track" style="width:90px;display:inline-block;vertical-align:middle;"><div class="progress-fill" style="width:${Math.min(100, pct)}%;"></div></div> <span style="margin-left:6px;">${pct}%</span></td>
+            </tr>`;
+        })
+        .join("");
+      html += `<div class="dash-section-title" style="margin-top:24px;">Bin inventory — right now</div>`;
+      html +=
+        activeBins.length === 0
+          ? `<div style="color:var(--text-muted);font-size:13px;">No bins on file.</div>`
+          : `<table style="margin-bottom:8px;">
+              <thead><tr>
+                <th style="cursor:default;">Site</th><th style="cursor:default;">Bin</th><th style="cursor:default;">Crop</th>
+                <th style="cursor:default;">Status</th><th style="cursor:default;">Split</th>
+                <th style="cursor:default;">Bushels</th><th style="cursor:default;">Capacity</th><th style="cursor:default;">Fill</th>
+              </tr></thead>
+              <tbody>${binRowsHtml}</tbody>
+            </table>`;
+
       if (ctErr) html += `<div style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load contract assignments for the dollar estimate: ${escapeHtml(ctErr.message)}</div>`;
       if (psErr) html += `<div style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load partner settlement history: ${escapeHtml(psErr.message)}</div>`;
+      if (binErr) html += `<div style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load bin inventory: ${escapeHtml(binErr.message)}</div>`;
 
       dashContentEl.innerHTML = html;
       dashContentEl.querySelectorAll("[data-mark-settled]").forEach((btn) => {
