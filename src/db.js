@@ -14,10 +14,13 @@
 // Each queue record has synced: false until sync.js confirms it landed.
 
 const DB_NAME = "ufer_kiosk";
-const DB_VERSION = 3; // v3 adds ticket_draft — recovers an in-progress scale
-// ticket (fields + photo) if the OS reloads the page while the camera is
-// open, which on some phones reclaims the browser's memory mid-capture
-// and wipes anything that only lived in JS state.
+const DB_VERSION = 4; // v4 adds dryer_readings, dryer_runs, and
+// active_dryer_runs — the dryer operator flow. A run only ever becomes a
+// dryer_runs record once it's stopped (start + stop + everything in
+// between, synced together); while it's running, its state lives in
+// active_dryer_runs (keyed by dryer name) so it survives a reload on this
+// device, the same reasoning as ticket_draft above. Readings sync
+// independently and continuously throughout a run, same as tickets.
 
 let dbPromise = null;
 
@@ -49,6 +52,15 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains("ticket_draft")) {
         db.createObjectStore("ticket_draft", { keyPath: "key" });
+      }
+      if (!db.objectStoreNames.contains("dryer_readings")) {
+        db.createObjectStore("dryer_readings", { keyPath: "localId", autoIncrement: true });
+      }
+      if (!db.objectStoreNames.contains("dryer_runs")) {
+        db.createObjectStore("dryer_runs", { keyPath: "localId", autoIncrement: true });
+      }
+      if (!db.objectStoreNames.contains("active_dryer_runs")) {
+        db.createObjectStore("active_dryer_runs", { keyPath: "dryerName" });
       }
     };
 
@@ -232,10 +244,103 @@ export async function clearTicketDraft() {
   });
 }
 
+// --- Dryer readings (sync independently and continuously, like tickets) ---
+
+export async function queueDryerReading(reading) {
+  return addRecord("dryer_readings", {
+    ...reading,
+    synced: false,
+    clientId: crypto.randomUUID(),
+  });
+}
+
+export async function getAllDryerReadings() {
+  return allRecords("dryer_readings");
+}
+
+export async function getPendingDryerReadings() {
+  return (await allRecords("dryer_readings")).filter((r) => !r.synced);
+}
+
+export async function markDryerReadingSynced(localId) {
+  return patchRecord("dryer_readings", localId, { synced: true, syncedAt: new Date().toISOString() });
+}
+
+// --- Dryer runs (written once, at stop — see the DB_VERSION note above) ---
+
+export async function queueDryerRun(run) {
+  // Unlike every other queue* function, this does NOT generate a fresh
+  // clientId — the caller must pass the SAME id that was already used as
+  // runClientId when this run's readings were logged (there's no foreign
+  // key between the two tables, so a mismatched id here would silently
+  // orphan every reading from this run).
+  if (!run.clientId) throw new Error("queueDryerRun: run.clientId is required (must match the runClientId its readings were logged under)");
+  return addRecord("dryer_runs", {
+    ...run,
+    synced: false,
+  });
+}
+
+export async function getAllDryerRuns() {
+  return allRecords("dryer_runs");
+}
+
+export async function getPendingDryerRuns() {
+  return (await allRecords("dryer_runs")).filter((r) => !r.synced);
+}
+
+export async function markDryerRunSynced(localId) {
+  return patchRecord("dryer_runs", localId, { synced: true, syncedAt: new Date().toISOString() });
+}
+
+// --- Active dryer run per dryer — survives a reload on this device while
+// a run is in progress. Keyed by dryer name since Tower Dryer and Super B
+// can run independently of each other.
+
+export async function saveActiveDryerRun(dryerName, data) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("active_dryer_runs", "readwrite");
+    const req = tx.objectStore("active_dryer_runs").put({ ...data, dryerName });
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function getActiveDryerRun(dryerName) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("active_dryer_runs", "readonly");
+    const req = tx.objectStore("active_dryer_runs").get(dryerName);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function getAllActiveDryerRuns() {
+  return allRecords("active_dryer_runs");
+}
+
+export async function clearActiveDryerRun(dryerName) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("active_dryer_runs", "readwrite");
+    const req = tx.objectStore("active_dryer_runs").delete(dryerName);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
 // Everything still waiting to reach Supabase — drives the "N queued" badge.
 export async function pendingCount() {
-  const [loads, ships, tickets] = await Promise.all([getPendingLoads(), getPendingShipments(), getPendingTickets()]);
-  return loads.length + ships.length + tickets.length;
+  const [loads, ships, tickets, readings, runs] = await Promise.all([
+    getPendingLoads(),
+    getPendingShipments(),
+    getPendingTickets(),
+    getPendingDryerReadings(),
+    getPendingDryerRuns(),
+  ]);
+  return loads.length + ships.length + tickets.length + readings.length + runs.length;
 }
 
 // --- Reference data cache (fields, bins, workers, destinations, ...) ---

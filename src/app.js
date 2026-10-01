@@ -5,7 +5,18 @@
 // db.js first; sync.js pushes to Supabase in the background whenever the
 // Chromebook has a connection.
 
-import { queueLoad, getReference, getAllLoads } from "./db.js";
+import {
+  queueLoad,
+  getReference,
+  getAllLoads,
+  queueDryerReading,
+  queueDryerRun,
+  getAllDryerReadings,
+  saveActiveDryerRun,
+  getActiveDryerRun,
+  getAllActiveDryerRuns,
+  clearActiveDryerRun,
+} from "./db.js";
 
 // Worker roster (id, name, pin) comes from Supabase's `workers` table via
 // getReference("workers") — see state.workers below. Note: PINs are
@@ -138,6 +149,20 @@ const state = {
   isBuffer: false,
 
   todayLog: [],
+
+  // --- Dryer operator flow ---
+  // dryerActive: current run per dryer, loaded from IndexedDB on mount —
+  // null means idle. { runClientId, sourceBinId, destBinId, crop, status,
+  // startedAt, workerId }
+  dryerActive: { "Tower Dryer": null, "Super B": null },
+  dryerCurrent: null, // which dryer the operator is currently viewing/acting on
+  dryerReadings: [], // this run's readings so far, for the live estimate + recent list
+  // Folds the run's own setup together with its baseline reading — the
+  // step-function math (see add-dryer-batches.sql) needs a reading
+  // exactly at the run's start, so this screen captures both in one go.
+  dryerStartForm: { sourceBinId: "", destBinId: "", crop: "", status: "", wetPctIn: "", dryPctOut: "", dryTemp: "", midgrainTemp: "", dischargeRate: "", plenumTemp: "", notes: "" },
+  dryerReadingForm: { wetPctIn: "", dryPctOut: "", dryTemp: "", midgrainTemp: "", dischargeRate: "", plenumTemp: "", notes: "" },
+  dryerStopForm: { actualBushels: "", notes: "" },
 };
 
 let root = null;
@@ -167,6 +192,17 @@ async function refreshTodayLog() {
     .filter((l) => new Date(l.queuedAt).toDateString() === today)
     .sort((a, b) => new Date(b.queuedAt) - new Date(a.queuedAt));
   setState({ todayLog: todays });
+}
+
+// Restores any in-progress dryer run(s) from IndexedDB — the whole reason
+// active_dryer_runs exists: if this device reloads mid-run, the operator
+// shouldn't come back to "Idle" and lose track of a run that's still
+// physically going.
+async function restoreActiveDryerRuns() {
+  const [rows, readings] = await Promise.all([getAllActiveDryerRuns(), getAllDryerReadings()]);
+  const active = { "Tower Dryer": null, "Super B": null };
+  rows.forEach((r) => { active[r.dryerName] = r; });
+  setState({ dryerActive: active, dryerReadings: readings });
 }
 
 function clearTruckFields() {
@@ -321,10 +357,11 @@ function homeScreen() {
   );
   wrap.appendChild(bigButton("Elevator delivery (Danube / Fairfax)", { disabled: true, sub: "Coming in a later phase" }));
   wrap.appendChild(bigButton("View bin levels", { disabled: true, sub: "Coming in a later phase" }));
+  const dryersRunning = Object.values(state.dryerActive).filter(Boolean).length;
   wrap.appendChild(
-    bigButton("Grain status review (dryer operator)", {
-      disabled: true,
-      sub: "Coming in a later phase — dryer operator will set/confirm status as grain moves out of the wet bin",
+    bigButton("Dryer operator", {
+      sub: dryersRunning > 0 ? `${dryersRunning} dryer${dryersRunning === 1 ? "" : "s"} running` : "Start a run, log readings, confirm grain status",
+      onClick: () => setState({ screen: "dryerHome" }),
     })
   );
   wrap.appendChild(h("div", { style: "margin-top:8px;" }, [linkButton("Log out", logOut)]));
@@ -850,6 +887,454 @@ function topBar() {
   return bar;
 }
 
+// ---------------------------------------------------------------------
+// Dryer operator — wet bin -> dryer -> dry bin. A run only ever becomes a
+// real dryer_runs record once it's stopped; while running, its state
+// lives in state.dryerActive (restored from IndexedDB on mount, so it
+// survives a reload on this device) and its readings sync independently
+// as they're logged. See add-dryer-batches.sql for the full reasoning.
+// ---------------------------------------------------------------------
+
+const DRYER_NAMES = ["Tower Dryer", "Super B"];
+
+function numField(label, placeholder, getValue, setValue) {
+  const wrap = h("div", { style: "display:flex;flex-direction:column;gap:4px;" });
+  if (label) wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};` }, label));
+  wrap.appendChild(
+    h("input", {
+      inputmode: "decimal",
+      placeholder,
+      value: getValue(),
+      style: `${BODY}font-size:18px;padding:12px;border-radius:8px;border:1px solid ${COLORS.border};background:${COLORS.panel};color:${COLORS.text};`,
+      // Mutates state directly without calling render() — same pattern as
+      // the weight field in truckScreen above. Re-rendering on every
+      // keystroke would rebuild the input and lose focus.
+      oninput: (e) => setValue(e.target.value.replace(/[^0-9.]/g, "")),
+    })
+  );
+  return wrap;
+}
+
+// discharge_rate on the sheet is a 0-100 dial setting, not bu/hr — see
+// add-dryer-batches.sql for the calibration table these factors come
+// from (both exactly linear, confirmed against the operators' own
+// output tables). Keep these in sync with the SQL view's CASE values.
+export const DRYER_RATE_FACTOR = { "Tower Dryer": 24.8, "Super B": 25.0 };
+
+// Mirrors dryer_run_estimates in add-dryer-batches.sql exactly — a STEP
+// function: each reading's rate holds steady until the NEXT reading (or
+// until endTime, for the last one), not an average between neighbors.
+// endTime is "now" for a live in-progress estimate, or the run's actual
+// ended_at once it's been stopped.
+export function estimateBushelsFromReadings(readings, endTime) {
+  const sorted = [...readings].sort((a, b) => new Date(a.recordedAt) - new Date(b.recordedAt));
+  const end = new Date(endTime);
+  let total = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    const r = sorted[i];
+    const segmentEnd = i < sorted.length - 1 ? new Date(sorted[i + 1].recordedAt) : end;
+    const factor = DRYER_RATE_FACTOR[r.dryerName] || 0;
+    const rate = r.dischargeRate != null && r.dischargeRate !== "" ? Number(r.dischargeRate) * factor : 0;
+    const hours = (segmentEnd - new Date(r.recordedAt)) / 3600000;
+    if (hours > 0) total += rate * hours;
+  }
+  return Math.round(total);
+}
+
+function elapsedLabel(startedAt) {
+  const ms = Date.now() - new Date(startedAt).getTime();
+  const hrs = Math.floor(ms / 3600000);
+  const mins = Math.round((ms % 3600000) / 60000);
+  return `${hrs}h ${mins}m`;
+}
+
+function dryerHomeScreen() {
+  const wrap = h("div", { style: "display:flex;flex-direction:column;gap:14px;" });
+  wrap.appendChild(h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.text};` }, "Dryer operator"));
+
+  DRYER_NAMES.forEach((dryerName) => {
+    const active = state.dryerActive[dryerName];
+    const card = h("div", {
+      style: `background:${COLORS.panelAlt};border:1px solid ${active ? COLORS.gold : COLORS.border};border-radius:10px;padding:16px 18px;display:flex;flex-direction:column;gap:10px;`,
+    });
+    card.appendChild(h("div", { style: `${HEAD}font-size:17px;font-weight:700;color:${COLORS.text};` }, dryerName));
+
+    if (!active) {
+      card.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};` }, "Idle"));
+      card.appendChild(
+        bigButton("Start run", {
+          tone: "gold",
+          onClick: () => {
+            state.dryerCurrent = dryerName;
+            state.dryerStartForm = { sourceBinId: "", destBinId: "", crop: "", status: "" };
+            setState({ screen: "dryerStart" });
+          },
+        })
+      );
+    } else {
+      const destBin = state.bins.find((b) => b.id === active.destBinId);
+      const sourceBin = state.bins.find((b) => b.id === active.sourceBinId);
+      const readingsForThisRun = state.dryerReadings.filter((r) => r.runClientId === active.runClientId);
+      const estimate = estimateBushelsFromReadings(readingsForThisRun, new Date());
+      card.appendChild(
+        h("div", { style: "display:flex;align-items:center;gap:8px;flex-wrap:wrap;" }, [
+          badge(active.status),
+          h("span", { style: `font-size:13px;color:${COLORS.text};` }, `${active.crop} — ${sourceBin ? sourceBin.name : active.sourceBinId || "—"} → ${destBin ? destBin.name : active.destBinId}`),
+        ])
+      );
+      card.appendChild(
+        h(
+          "div",
+          { style: `font-size:13px;color:${COLORS.textMuted};` },
+          `Running ${elapsedLabel(active.startedAt)} — est. ${estimate.toLocaleString()} bu so far (${readingsForThisRun.length} reading${readingsForThisRun.length === 1 ? "" : "s"})`
+        )
+      );
+      card.appendChild(
+        h("div", { style: "display:flex;gap:8px;" }, [
+          h("div", { style: "flex:1;" }, [
+            bigButton("Log reading", {
+              tone: "gold",
+              onClick: () => {
+                state.dryerCurrent = dryerName;
+                state.dryerReadingForm = { wetPctIn: "", dryPctOut: "", dryTemp: "", midgrainTemp: "", dischargeRate: "", plenumTemp: "", notes: "" };
+                setState({ screen: "dryerReading" });
+              },
+            }),
+          ]),
+          h("div", { style: "flex:1;" }, [
+            bigButton("Stop run", {
+              onClick: () => {
+                state.dryerCurrent = dryerName;
+                state.dryerStopForm = { actualBushels: "", notes: "" };
+                setState({ screen: "dryerStop" });
+              },
+            }),
+          ]),
+        ])
+      );
+    }
+    wrap.appendChild(card);
+  });
+
+  wrap.appendChild(linkButton("← Back", () => setState({ screen: "home" })));
+  return wrap;
+}
+
+function dryerStartScreen() {
+  const wrap = h("div", { style: "display:flex;flex-direction:column;gap:14px;" });
+  wrap.appendChild(h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.text};` }, `Start run — ${state.dryerCurrent}`));
+  const f = state.dryerStartForm;
+
+  wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-bottom:-4px;` }, "From (wet bin)"));
+  const wetBins = state.bins.filter((b) => b.bin_type === "wet" && b.active !== false);
+  const sourceGrid = h("div", { style: "display:grid;grid-template-columns:repeat(3,1fr);gap:8px;" });
+  wetBins.forEach((b) => {
+    const selected = f.sourceBinId === b.id;
+    sourceGrid.appendChild(
+      h(
+        "button",
+        {
+          style: `${BODY}padding:14px 8px;border-radius:10px;border:1px solid ${selected ? COLORS.gold : COLORS.border};background:${selected ? COLORS.goldDark : COLORS.panelAlt};color:${selected ? COLORS.gold : COLORS.text};font-size:15px;font-weight:700;cursor:pointer;text-align:center;`,
+          onclick: () => setState({ dryerStartForm: { ...f, sourceBinId: b.id } }),
+        },
+        b.name
+      )
+    );
+  });
+  wrap.appendChild(sourceGrid);
+
+  wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-bottom:-4px;` }, "To (dry bin)"));
+  const dryBins = state.bins.filter((b) => b.bin_type !== "wet" && b.active !== false);
+  const destGrid = h("div", { style: "display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-height:220px;overflow-y:auto;" });
+  dryBins.forEach((b) => {
+    const selected = f.destBinId === b.id;
+    destGrid.appendChild(
+      h(
+        "button",
+        {
+          style: `${BODY}padding:14px 8px;border-radius:10px;border:1px solid ${selected ? COLORS.gold : COLORS.border};background:${selected ? COLORS.goldDark : COLORS.panelAlt};color:${selected ? COLORS.gold : COLORS.text};font-size:15px;font-weight:700;cursor:pointer;text-align:center;`,
+          onclick: () => setState({ dryerStartForm: { ...f, destBinId: b.id } }),
+        },
+        b.name
+      )
+    );
+  });
+  wrap.appendChild(destGrid);
+
+  wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-bottom:-4px;` }, "Crop"));
+  const cropRow = h("div", { style: "display:flex;gap:8px;" });
+  CROPS.forEach((crop) => {
+    cropRow.appendChild(
+      h(
+        "button",
+        {
+          style: `${BODY}flex:1;padding:12px;border-radius:8px;border:1px solid ${f.crop === crop ? COLORS.gold : COLORS.border};background:${f.crop === crop ? COLORS.goldDark : COLORS.panelAlt};color:${f.crop === crop ? COLORS.gold : COLORS.text};font-size:14px;font-weight:600;cursor:pointer;`,
+          onclick: () => setState({ dryerStartForm: { ...f, crop } }),
+        },
+        crop
+      )
+    );
+  });
+  wrap.appendChild(cropRow);
+
+  wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-bottom:-4px;` }, "Status — confirm what's actually running right now, not what this bin will be used for later"));
+  const statusRow = h("div", { style: "display:flex;gap:8px;" });
+  ["organic", "transitional", "conventional"].forEach((status) => {
+    const s = STATUS_LABEL[status];
+    statusRow.appendChild(
+      h(
+        "button",
+        {
+          style: `${BODY}flex:1;padding:12px;border-radius:8px;border:1px solid ${f.status === status ? s.fg : COLORS.border};background:${f.status === status ? s.bg : COLORS.panelAlt};color:${f.status === status ? s.fg : COLORS.text};font-size:14px;font-weight:600;cursor:pointer;`,
+          onclick: () => setState({ dryerStartForm: { ...f, status } }),
+        },
+        s.label
+      )
+    );
+  });
+  wrap.appendChild(statusRow);
+
+  wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-top:4px;margin-bottom:-4px;` }, "Current readings, right now — this sets the baseline the run starts from"));
+  const grid = h("div", { style: "display:grid;grid-template-columns:1fr 1fr;gap:12px;" });
+  grid.appendChild(numField("Wet % incoming", "e.g. 24.5", () => f.wetPctIn, (v) => (f.wetPctIn = v)));
+  grid.appendChild(numField("Dry % out", "e.g. 15.0", () => f.dryPctOut, (v) => (f.dryPctOut = v)));
+  grid.appendChild(numField("Dry temp", "e.g. 210", () => f.dryTemp, (v) => (f.dryTemp = v)));
+  grid.appendChild(numField("Midgrain temp", "e.g. 140", () => f.midgrainTemp, (v) => (f.midgrainTemp = v)));
+  grid.appendChild(numField("Discharge rate setting (0–100)", "e.g. 60", () => f.dischargeRate, (v) => (f.dischargeRate = v)));
+  grid.appendChild(numField("Plenum temp", "e.g. 230", () => f.plenumTemp, (v) => (f.plenumTemp = v)));
+  wrap.appendChild(grid);
+
+  if (state.dryerCurrent === "Super B" && state.dryerActive["Tower Dryer"]) {
+    wrap.appendChild(
+      h(
+        "div",
+        { style: `font-size:12px;color:${COLORS.amber};background:${COLORS.amberDark};border-radius:8px;padding:8px 10px;` },
+        "Tower Dryer is also running — Super B is limited to a setting of 40 while both run together (dry leg throughput)."
+      )
+    );
+  }
+
+  wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-bottom:-4px;` }, "Notes"));
+  wrap.appendChild(
+    h(
+      "textarea",
+      {
+        placeholder: "Optional",
+        style: `${BODY}font-size:15px;padding:12px;border-radius:8px;border:1px solid ${COLORS.border};background:${COLORS.panel};color:${COLORS.text};min-height:50px;`,
+        oninput: (e) => (f.notes = e.target.value),
+      },
+      f.notes
+    )
+  );
+
+  const ready = f.destBinId && f.crop && f.status;
+  wrap.appendChild(bigButton("Start run", { tone: "gold", disabled: !ready, onClick: startDryerRun }));
+  wrap.appendChild(linkButton("← Back", () => setState({ screen: "dryerHome" })));
+  return wrap;
+}
+
+async function startDryerRun() {
+  const f = state.dryerStartForm;
+  const dryerName = state.dryerCurrent;
+  const startedAt = new Date().toISOString();
+  const active = {
+    runClientId: crypto.randomUUID(),
+    sourceBinId: f.sourceBinId || null,
+    destBinId: f.destBinId,
+    crop: f.crop,
+    status: f.status,
+    startedAt,
+    workerId: state.worker.id,
+  };
+  await saveActiveDryerRun(dryerName, active);
+  // The baseline reading, timestamped to EXACTLY match startedAt — the
+  // step-function estimate (see add-dryer-batches.sql) needs a reading
+  // right at the run's start, or its first segment has no rate to apply.
+  const baselineReading = {
+    runClientId: active.runClientId,
+    dryerName,
+    recordedAt: startedAt,
+    wetPctIn: f.wetPctIn ? Number(f.wetPctIn) : null,
+    dryPctOut: f.dryPctOut ? Number(f.dryPctOut) : null,
+    dryTemp: f.dryTemp ? Number(f.dryTemp) : null,
+    midgrainTemp: f.midgrainTemp ? Number(f.midgrainTemp) : null,
+    dischargeRate: f.dischargeRate ? Number(f.dischargeRate) : null,
+    plenumTemp: f.plenumTemp ? Number(f.plenumTemp) : null,
+    notes: f.notes || null,
+    workerId: state.worker.id,
+  };
+  const savedReading = await queueDryerReading(baselineReading);
+  state.dryerActive[dryerName] = active;
+  state.dryerReadings = [...state.dryerReadings, savedReading];
+  setState({ screen: "dryerHome" });
+}
+
+function dryerReadingScreen() {
+  const dryerName = state.dryerCurrent;
+  const active = state.dryerActive[dryerName];
+  const wrap = h("div", { style: "display:flex;flex-direction:column;gap:14px;" });
+  wrap.appendChild(h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.text};` }, `Log reading — ${dryerName}`));
+  if (!active) {
+    wrap.appendChild(h("div", { style: `font-size:14px;color:${COLORS.textMuted};` }, "No run in progress."));
+    wrap.appendChild(linkButton("← Back", () => setState({ screen: "dryerHome" })));
+    return wrap;
+  }
+
+  const f = state.dryerReadingForm;
+  const grid = h("div", { style: "display:grid;grid-template-columns:1fr 1fr;gap:12px;" });
+  grid.appendChild(numField("Wet % incoming", "e.g. 24.5", () => f.wetPctIn, (v) => (f.wetPctIn = v)));
+  grid.appendChild(numField("Dry % out", "e.g. 15.0", () => f.dryPctOut, (v) => (f.dryPctOut = v)));
+  grid.appendChild(numField("Dry temp", "e.g. 210", () => f.dryTemp, (v) => (f.dryTemp = v)));
+  grid.appendChild(numField("Midgrain temp", "e.g. 140", () => f.midgrainTemp, (v) => (f.midgrainTemp = v)));
+  grid.appendChild(numField("Discharge rate setting (0–100)", "e.g. 60", () => f.dischargeRate, (v) => (f.dischargeRate = v)));
+  grid.appendChild(numField("Plenum temp", "e.g. 230", () => f.plenumTemp, (v) => (f.plenumTemp = v)));
+  wrap.appendChild(grid);
+
+  if (dryerName === "Super B" && state.dryerActive["Tower Dryer"]) {
+    wrap.appendChild(
+      h(
+        "div",
+        { style: `font-size:12px;color:${COLORS.amber};background:${COLORS.amberDark};border-radius:8px;padding:8px 10px;` },
+        "Tower Dryer is also running — Super B is limited to a setting of 40 while both run together (dry leg throughput)."
+      )
+    );
+  }
+
+  wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-bottom:-4px;` }, "Notes"));
+  wrap.appendChild(
+    h(
+      "textarea",
+      {
+        placeholder: "Optional",
+        style: `${BODY}font-size:15px;padding:12px;border-radius:8px;border:1px solid ${COLORS.border};background:${COLORS.panel};color:${COLORS.text};min-height:60px;`,
+        oninput: (e) => (f.notes = e.target.value),
+      },
+      f.notes
+    )
+  );
+
+  wrap.appendChild(bigButton("Save reading", { tone: "gold", onClick: saveDryerReading }));
+
+  const readingsForThisRun = state.dryerReadings.filter((r) => r.runClientId === active.runClientId).sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt));
+  if (readingsForThisRun.length) {
+    wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-top:8px;` }, `Logged this run (${readingsForThisRun.length})`));
+    const list = h("div", { style: "display:flex;flex-direction:column;gap:6px;max-height:140px;overflow-y:auto;" });
+    readingsForThisRun.forEach((r) => {
+      const buPerHour = r.dischargeRate != null ? Math.round(r.dischargeRate * (DRYER_RATE_FACTOR[r.dryerName] || 0)) : null;
+      list.appendChild(
+        h(
+          "div",
+          { style: `font-size:12px;color:${COLORS.textMuted};` },
+          `${new Date(r.recordedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} — wet ${r.wetPctIn ?? "—"}% / dry ${r.dryPctOut ?? "—"}% / setting ${r.dischargeRate ?? "—"}${buPerHour != null ? ` (≈${buPerHour.toLocaleString()} bu/hr)` : ""}`
+        )
+      );
+    });
+    wrap.appendChild(list);
+  }
+
+  wrap.appendChild(linkButton("← Back", () => setState({ screen: "dryerHome" })));
+  return wrap;
+}
+
+async function saveDryerReading() {
+  const dryerName = state.dryerCurrent;
+  const active = state.dryerActive[dryerName];
+  const f = state.dryerReadingForm;
+  const reading = {
+    runClientId: active.runClientId,
+    dryerName,
+    recordedAt: new Date().toISOString(),
+    wetPctIn: f.wetPctIn ? Number(f.wetPctIn) : null,
+    dryPctOut: f.dryPctOut ? Number(f.dryPctOut) : null,
+    dryTemp: f.dryTemp ? Number(f.dryTemp) : null,
+    midgrainTemp: f.midgrainTemp ? Number(f.midgrainTemp) : null,
+    dischargeRate: f.dischargeRate ? Number(f.dischargeRate) : null,
+    plenumTemp: f.plenumTemp ? Number(f.plenumTemp) : null,
+    notes: f.notes || null,
+    workerId: state.worker.id,
+  };
+  const saved = await queueDryerReading(reading);
+  state.dryerReadings = [...state.dryerReadings, saved];
+  setState({ screen: "dryerHome" });
+}
+
+function dryerStopScreen() {
+  const dryerName = state.dryerCurrent;
+  const active = state.dryerActive[dryerName];
+  const wrap = h("div", { style: "display:flex;flex-direction:column;gap:14px;" });
+  wrap.appendChild(h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.text};` }, `Stop run — ${dryerName}`));
+  if (!active) {
+    wrap.appendChild(h("div", { style: `font-size:14px;color:${COLORS.textMuted};` }, "No run in progress."));
+    wrap.appendChild(linkButton("← Back", () => setState({ screen: "dryerHome" })));
+    return wrap;
+  }
+
+  const destBin = state.bins.find((b) => b.id === active.destBinId);
+  const readingsForThisRun = state.dryerReadings.filter((r) => r.runClientId === active.runClientId);
+  const estimate = estimateBushelsFromReadings(readingsForThisRun, new Date());
+
+  const card = h("div", { style: `background:${COLORS.panelAlt};border:1px solid ${COLORS.border};border-radius:10px;padding:16px 18px;display:flex;flex-direction:column;gap:8px;` });
+  card.appendChild(h("div", { style: `font-size:14px;color:${COLORS.text};` }, `${active.crop} → ${destBin ? destBin.name : active.destBinId}`));
+  card.appendChild(badge(active.status));
+  card.appendChild(
+    h(
+      "div",
+      { style: `font-size:13px;color:${COLORS.textMuted};` },
+      `Ran ${elapsedLabel(active.startedAt)} — ${readingsForThisRun.length} reading${readingsForThisRun.length === 1 ? "" : "s"} logged`
+    )
+  );
+  card.appendChild(h("div", { style: `font-size:16px;font-weight:700;color:${COLORS.gold};` }, `Estimated: ${estimate.toLocaleString()} bu`));
+  card.appendChild(h("div", { style: `font-size:12px;color:${COLORS.textMuted};` }, "From discharge-rate readings — rough, not exact"));
+  wrap.appendChild(card);
+
+  const f = state.dryerStopForm;
+  wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-bottom:-4px;` }, "Actual bushels (optional — overrides the estimate above if you know a better number)"));
+  wrap.appendChild(numField(null, `e.g. ${estimate}`, () => f.actualBushels, (v) => (f.actualBushels = v)));
+
+  wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-bottom:-4px;` }, "Notes"));
+  wrap.appendChild(
+    h(
+      "textarea",
+      {
+        placeholder: "Optional",
+        style: `${BODY}font-size:15px;padding:12px;border-radius:8px;border:1px solid ${COLORS.border};background:${COLORS.panel};color:${COLORS.text};min-height:50px;`,
+        oninput: (e) => (f.notes = e.target.value),
+      },
+      f.notes
+    )
+  );
+
+  wrap.appendChild(bigButton("Confirm stop", { tone: "gold", onClick: stopDryerRun }));
+  wrap.appendChild(linkButton("← Back", () => setState({ screen: "dryerHome" })));
+  return wrap;
+}
+
+async function stopDryerRun() {
+  const dryerName = state.dryerCurrent;
+  const active = state.dryerActive[dryerName];
+  const f = state.dryerStopForm;
+  const run = {
+    clientId: active.runClientId, // must match what readings already reference — see queueDryerRun in db.js
+    dryerName,
+    sourceBinId: active.sourceBinId,
+    destBinId: active.destBinId,
+    crop: active.crop,
+    status: active.status,
+    startedAt: active.startedAt,
+    endedAt: new Date().toISOString(),
+    bushelsMovedActual: f.actualBushels ? Number(f.actualBushels) : null,
+    workerId: active.workerId,
+    notes: f.notes || null,
+  };
+  await queueDryerRun(run);
+  await clearActiveDryerRun(dryerName);
+  state.dryerActive[dryerName] = null;
+  // This run is done — drop its readings from the live in-memory cache
+  // (they're already queued/synced independently; nothing is lost).
+  state.dryerReadings = state.dryerReadings.filter((r) => r.runClientId !== active.runClientId);
+  setState({ screen: "dryerHome" });
+}
+
 function stepDots() {
   const stepIndex = { login: 0, home: 0, crop: 1, field: 2, truck: 3, bin: 4, confirm: 5, success: 5 }[state.screen];
   const total = 6;
@@ -902,7 +1387,8 @@ function render() {
     style: `${BODY}background:${COLORS.ink};min-height:100%;display:flex;flex-direction:column;`,
   });
   frame.appendChild(topBar());
-  if (state.screen !== "login") frame.appendChild(stepDots());
+  const isDryerScreen = state.screen.startsWith("dryer");
+  if (state.screen !== "login" && !isDryerScreen) frame.appendChild(stepDots()); // stepDots is specific to the field-delivery flow's 5 steps
 
   const body = h("div", { style: "flex:1;padding:22px 28px 28px;display:flex;flex-direction:column;gap:16px;" });
   const screens = {
@@ -914,11 +1400,15 @@ function render() {
     bin: binScreen,
     confirm: confirmScreen,
     success: successScreen,
+    dryerHome: dryerHomeScreen,
+    dryerStart: dryerStartScreen,
+    dryerReading: dryerReadingScreen,
+    dryerStop: dryerStopScreen,
   };
   body.appendChild(screens[state.screen]());
   frame.appendChild(body);
 
-  const panel = state.screen !== "login" ? logPanel() : null;
+  const panel = state.screen !== "login" && !isDryerScreen ? logPanel() : null; // logPanel shows today's FIELD-delivery log — not relevant to the dryer flow
   if (panel) frame.appendChild(panel);
 
   root.appendChild(frame);
@@ -941,7 +1431,7 @@ export async function mountApp(el) {
   root = el;
   installInactivityWatcher();
   render(); // draw the login screen immediately, don't block on network
-  await Promise.all([refreshReference(), refreshTodayLog()]);
+  await Promise.all([refreshReference(), refreshTodayLog(), restoreActiveDryerRuns()]);
 
   // sync.js dispatches this after every successful reference pull, so
   // a field/bin change (e.g. a clean-bin affidavit logged elsewhere)

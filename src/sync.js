@@ -21,6 +21,10 @@ import {
   getPendingTickets,
   markTicketSynced,
   markTicketPhotoUploaded,
+  getPendingDryerReadings,
+  markDryerReadingSynced,
+  getPendingDryerRuns,
+  markDryerRunSynced,
   pendingCount,
   cacheReference,
 } from "./db.js";
@@ -176,6 +180,44 @@ async function pushPendingTickets() {
   return { pushed, failed };
 }
 
+// Readings sync continuously and independently throughout a run — no
+// foreign key to dryer_runs (see add-dryer-batches.sql), so this can
+// land before, after, or without its run ever syncing at all.
+async function pushPendingDryerReadings() {
+  let pushed = 0;
+  let failed = 0;
+  for (const r of await getPendingDryerReadings()) {
+    try {
+      await insertRow("dryer_readings", toDryerReadingRow(r));
+      await markDryerReadingSynced(r.localId);
+      pushed += 1;
+    } catch (err) {
+      console.error("Sync failed for dryer reading", r.localId, err);
+      failed += 1;
+    }
+  }
+  return { pushed, failed };
+}
+
+// A run only ever reaches this queue once it's been stopped (see
+// stopDryerRun in app.js) — start and end are already both known by the
+// time this is pushed.
+async function pushPendingDryerRuns() {
+  let pushed = 0;
+  let failed = 0;
+  for (const run of await getPendingDryerRuns()) {
+    try {
+      await insertRow("dryer_runs", toDryerRunRow(run));
+      await markDryerRunSynced(run.localId);
+      pushed += 1;
+    } catch (err) {
+      console.error("Sync failed for dryer run", run.localId, err);
+      failed += 1;
+    }
+  }
+  return { pushed, failed };
+}
+
 // Maps the kiosk's in-app load shape to the Supabase table's columns.
 function toLoadRow(load) {
   return {
@@ -239,6 +281,41 @@ function toTicketRow(t) {
   };
 }
 
+function toDryerReadingRow(r) {
+  return {
+    client_id: r.clientId,
+    run_client_id: r.runClientId,
+    dryer_name: r.dryerName,
+    recorded_at: r.recordedAt,
+    wet_pct_in: r.wetPctIn ?? null,
+    dry_pct_out: r.dryPctOut ?? null,
+    dry_temp: r.dryTemp ?? null,
+    midgrain_temp: r.midgrainTemp ?? null,
+    discharge_rate: r.dischargeRate ?? null, // 0-100 dial setting, not bu/hr — see add-dryer-batches.sql
+    plenum_temp: r.plenumTemp ?? null,
+    notes: r.notes || null,
+    worker_id: r.workerId ?? null,
+    device_id: config.deviceId,
+  };
+}
+
+function toDryerRunRow(run) {
+  return {
+    client_id: run.clientId, // must match the runClientId its readings were already logged under — see queueDryerRun in db.js
+    dryer_name: run.dryerName,
+    source_bin_id: run.sourceBinId ?? null,
+    dest_bin_id: run.destBinId,
+    crop: run.crop,
+    status: run.status,
+    started_at: run.startedAt,
+    ended_at: run.endedAt,
+    bushels_moved_actual: run.bushelsMovedActual ?? null,
+    worker_id: run.workerId ?? null,
+    notes: run.notes || null,
+    device_id: config.deviceId,
+  };
+}
+
 async function pullReferenceData() {
   let anyUpdated = false;
   const wanted = config.reference || DEFAULT_REFERENCE_KEYS;
@@ -261,7 +338,13 @@ export async function runSyncCycle() {
   syncing = true;
   notify("syncing");
   try {
-    const parts = [await pushPendingLoads(), await pushPendingShipments(), await pushPendingTickets()];
+    const parts = [
+      await pushPendingLoads(),
+      await pushPendingShipments(),
+      await pushPendingTickets(),
+      await pushPendingDryerReadings(),
+      await pushPendingDryerRuns(),
+    ];
     const pushed = parts.reduce((n, p) => n + p.pushed, 0);
     const failed = parts.reduce((n, p) => n + p.failed, 0);
     await pullReferenceData();
