@@ -772,6 +772,16 @@
       row.appendChild(btn);
       return row;
     }
+    // Natural sort — compares the numeric part of a ticket number
+    // numerically (so "AH-2" sorts before "AH-10", unlike plain string
+    // comparison), while still handling fully numeric or letter-prefixed
+    // ticket numbers ("DAK 61431") sensibly either way.
+    function sortByTicketNumber(items, getTicketNumber) {
+      return [...items].sort((a, b) =>
+        (getTicketNumber(a) || "").localeCompare(getTicketNumber(b) || "", undefined, { numeric: true, sensitivity: "base" })
+      );
+    }
+
     function haulSummary(h) {
       if (!h) return "(load not found)";
       const ticketPart = h.ticketNumber && h.ticketNumber !== "—" ? `#${h.ticketNumber} · ` : "";
@@ -908,7 +918,7 @@
             none.textContent = "None yet.";
             detail.appendChild(none);
           } else {
-            c.assignments.forEach((a) => {
+            sortByTicketNumber(c.assignments, (a) => allHauls.find((x) => x.haulId === a.shipmentClientId)?.ticketNumber).forEach((a) => {
               const h = allHauls.find((x) => x.haulId === a.shipmentClientId);
               const fullBu = h && h._ticket ? h._ticket.net_bushels : null;
               // Only spell out "N bu of an M bu ticket" when it's actually
@@ -921,7 +931,7 @@
             });
           }
 
-          const eligible = allHauls.filter((h) => h.checkStatus !== "none" && eligibleForContract(h, c) && haulRemainingBushels(h) > 0.001);
+          const eligible = sortByTicketNumber(allHauls.filter((h) => h.checkStatus !== "none" && eligibleForContract(h, c) && haulRemainingBushels(h) > 0.001), (h) => h.ticketNumber);
           const pickLabel = document.createElement("div");
           pickLabel.style.cssText = "font-size:12px;color:var(--text-muted);margin:12px 0 6px;";
           pickLabel.textContent = `Eligible loads with bushels remaining (${eligible.length})`;
@@ -1108,7 +1118,7 @@
             none.textContent = "None yet.";
             detail.appendChild(none);
           } else {
-            s.assignments.forEach((a) => {
+            sortByTicketNumber(s.assignments, (a) => allHauls.find((x) => x.haulId === a.shipmentClientId)?.ticketNumber).forEach((a) => {
               const h = allHauls.find((x) => x.haulId === a.shipmentClientId);
               const row = pickRow(haulSummary(h), "Remove", () => unassignFromSettlement(a.id));
               // ticket-pick-row is a horizontal flex row (label + button) —
@@ -1152,7 +1162,7 @@
             });
           }
 
-          const eligible = allHauls.filter((h) => h.checkStatus !== "none" && !assignedElsewhere.has(h.haulId) && h.destinationId === s.destination_id);
+          const eligible = sortByTicketNumber(allHauls.filter((h) => h.checkStatus !== "none" && !assignedElsewhere.has(h.haulId) && h.destinationId === s.destination_id), (h) => h.ticketNumber);
           const pickLabel = document.createElement("div");
           pickLabel.style.cssText = "font-size:12px;color:var(--text-muted);margin:12px 0 6px;";
           pickLabel.textContent = `Unassigned loads for this buyer (${eligible.length})`;
