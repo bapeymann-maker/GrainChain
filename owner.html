@@ -775,9 +775,9 @@
     function pickRow(text, btnLabel, onClick, tone = "", highlighted = false) {
       const row = document.createElement("div");
       row.className = "ticket-pick-row";
-      if (highlighted) row.style.cssText = "background:var(--gold-dark, #3A2F0E);border-left:3px solid var(--gold, #D4A017);padding-left:7px;";
       const span = document.createElement("span");
       span.style.flex = "1";
+      if (highlighted) span.style.cssText = "flex:1;font-weight:700;color:var(--gold, #D4A017);";
       span.textContent = (highlighted ? "✓ On settlement — " : "") + text;
       row.appendChild(span);
       const btn = document.createElement("button");
