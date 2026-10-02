@@ -123,6 +123,10 @@
         <option value="transitional">Transitional</option>
         <option value="conventional">Conventional</option>
       </select>
+      <select id="destination-filter" style="display:none;">
+        <option value="">All destinations</option>
+      </select>
+      <button id="hauls-csv-btn" style="display:none;">Download CSV</button>
       <button id="view-dashboard-btn" class="view-btn">Dashboard</button>
       <button id="view-loads-btn" class="view-btn active-view">Field to Bin</button>
       <button id="view-field-btn" class="view-btn">By Field</button>
@@ -180,6 +184,7 @@
           </tr>
         </thead>
         <tbody id="hauls-rows"></tbody>
+        <tfoot id="hauls-totals"></tfoot>
       </table>
 
       <div id="contracts-view" style="display:none;">
@@ -271,6 +276,8 @@
     const settlementsListEl = document.getElementById("settlements-list");
     const searchEl = document.getElementById("search");
     const statusFilterEl = document.getElementById("status-filter");
+    const destinationFilterEl = document.getElementById("destination-filter");
+    const haulsCsvBtnEl = document.getElementById("hauls-csv-btn");
     const refreshBtn = document.getElementById("refresh-btn");
 
     let allLoads = [];
@@ -395,6 +402,8 @@
     refreshBtn.addEventListener("click", fetchLoads);
     searchEl.addEventListener("input", render);
     statusFilterEl.addEventListener("change", render);
+    destinationFilterEl.addEventListener("change", render);
+    haulsCsvBtnEl.addEventListener("click", downloadHaulsCsv);
 
     const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn, dashboard: viewDashboardBtn };
     const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView, dashboard: dashboardView };
@@ -418,6 +427,10 @@
       const showFilters = mode === "loads" || mode === "field" || mode === "hauls";
       searchEl.style.display = showFilters ? "" : "none";
       statusFilterEl.style.display = showFilters ? "" : "none";
+      // Destination only means anything for outbound hauls — Field to Bin
+      // and By Field are about bins/fields, not where a load was sold to.
+      destinationFilterEl.style.display = mode === "hauls" ? "" : "none";
+      haulsCsvBtnEl.style.display = mode === "hauls" ? "" : "none";
 
       if (mode === "hauls" && !haulsLoaded) await fetchHauls();
       if (mode === "contracts") await ensureContracts();
@@ -1782,11 +1795,25 @@
       render();
     }
 
+    function populateDestinationFilter() {
+      // Derived straight from allHauls rather than the separate
+      // allDestinations list — guarantees every option actually has at
+      // least one haul behind it, and needs no extra fetch of its own.
+      const current = destinationFilterEl.value;
+      const names = [...new Set(allHauls.map((r) => r.destination).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      const options = ['<option value="">All destinations</option>', ...names.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`)];
+      destinationFilterEl.innerHTML = options.join("");
+      if (names.includes(current)) destinationFilterEl.value = current;
+    }
+
     function renderHaulsTable() {
+      populateDestinationFilter();
       const search = searchEl.value.trim().toLowerCase();
       const statusFilter = statusFilterEl.value;
+      const destinationFilter = destinationFilterEl.value;
       let rows = allHauls.filter((r) => {
         if (statusFilter && r.originStatus !== statusFilter) return false;
+        if (destinationFilter && r.destination !== destinationFilter) return false;
         if (!search) return true;
         return [r.driver, r.origin, r.destination, r.ticketNumber].some((v) => (v || "").toLowerCase().includes(search));
       });
@@ -1843,6 +1870,56 @@
           showPhoto(btn.dataset.path, btn);
         });
       });
+
+      // Totals for whatever's currently filtered — the point of this is
+      // reconciling against an elevator settlement, so both the driver's
+      // own entry and the AI's reading of the actual printed ticket are
+      // summed separately rather than picking one as "the" number.
+      const haulsTotalsEl = document.getElementById("hauls-totals");
+      const driverBuTotal = rows.reduce((sum, r) => sum + (r._ticket?.net_bushels || 0), 0);
+      const aiBuTotal = rows.reduce((sum, r) => sum + (r._read && !r._read.error ? r._read.net_bu || 0 : 0), 0);
+      haulsTotalsEl.innerHTML = rows.length
+        ? `<tr style="font-weight:600;border-top:2px solid var(--border);">
+            <td colspan="6">${rows.length} ticket${rows.length === 1 ? "" : "s"}</td>
+            <td class="driver-val">${driverBuTotal.toLocaleString()} bu</td>
+            <td class="ai-val">${aiBuTotal.toLocaleString()} bu</td>
+            <td colspan="2"></td>
+          </tr>`
+        : "";
+    }
+
+    function downloadHaulsCsv() {
+      const search = searchEl.value.trim().toLowerCase();
+      const statusFilter = statusFilterEl.value;
+      const destinationFilter = destinationFilterEl.value;
+      const rows = allHauls.filter((r) => {
+        if (statusFilter && r.originStatus !== statusFilter) return false;
+        if (destinationFilter && r.destination !== destinationFilter) return false;
+        if (!search) return true;
+        return [r.driver, r.origin, r.destination, r.ticketNumber].some((v) => (v || "").toLowerCase().includes(search));
+      });
+      const csvEscape = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+      const header = ["Departed", "Driver", "From", "To", "Truck/Trailer", "Ticket #", "Driver net lb", "Driver net bu", "AI net lb", "AI net bu", "Check status"];
+      const lines = [header.map(csvEscape).join(",")];
+      rows.forEach((r) => {
+        lines.push([
+          r.departed_at ? new Date(r.departed_at).toLocaleString() : "",
+          r.driver, r.origin, r.destination, r.rig, r.ticketNumber,
+          r._ticket?.net_lb ?? "", r._ticket?.net_bushels ?? "",
+          r._read && !r._read.error ? r._read.net_lb ?? "" : "", r._read && !r._read.error ? r._read.net_bu ?? "" : "",
+          r.checkLabel,
+        ].map(csvEscape).join(","));
+      });
+      const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const label = destinationFilter ? destinationFilter.replace(/[^a-z0-9]+/gi, "-") : "all-destinations";
+      a.href = url;
+      a.download = `grainchain-hauls-${label}-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
     }
 
     function escapeHtml(s) {
