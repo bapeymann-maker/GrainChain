@@ -775,33 +775,40 @@
     function pickRow(text, btnLabel, onClick, tone = "", highlighted = false) {
       const row = document.createElement("div");
       row.className = "ticket-pick-row";
-      const span = document.createElement("span");
-      span.style.flex = "1";
-      if (highlighted) span.style.cssText = "flex:1;font-weight:700;color:var(--gold, #D4A017);";
-      span.textContent = (highlighted ? "✓ On settlement — " : "") + text;
-      row.appendChild(span);
       const btn = document.createElement("button");
       btn.className = `small-btn ${tone}`.trim();
       btn.textContent = btnLabel;
       btn.addEventListener("click", onClick);
       row.appendChild(btn);
+      if (highlighted) {
+        const check = document.createElement("span");
+        check.textContent = "✓";
+        check.title = "On settlement";
+        check.style.cssText = "color:var(--gold, #D4A017);font-weight:700;";
+        row.appendChild(check);
+      }
+      const span = document.createElement("span");
+      span.style.cssText = highlighted ? "flex:1;font-weight:700;color:var(--gold, #D4A017);" : "flex:1;";
+      span.textContent = text;
+      row.appendChild(span);
       return row;
     }
     // For matching a driver-typed ticket number against one Claude read
     // off a settlement document. A straight normalized-string match
-    // isn't enough: the same ticket is routinely written two different
-    // ways in these two places — a driver types just the bare number
-    // ("61427"), but the ticket itself (and so the settlement) often
-    // prints it with the buyer's own prefix ("DAK 61427") — so an exact
-    // match after stripping punctuation still misses real matches.
-    // Comparing the trailing run of digits instead handles that: it's
-    // "61427" either way, prefix or no prefix. This can still be fooled
-    // by a ticket number format that puts something else (a date, a
-    // sub-ticket suffix) after the real number, but that's not the
-    // shape these tickets actually take.
+    // isn't enough: the same ticket is routinely written differently in
+    // these two places. A driver types just the bare number ("61427"),
+    // but the buyer's own printed format varies — sometimes a prefix
+    // ("DAK 61427"), sometimes zero-padded with a trailing copy/sequence
+    // suffix ("0061427-01", seen on an actual Meuret settlement). Taking
+    // the LONGEST run of digits (not first or last) and stripping
+    // leading zeros handles both: the real ticket number is reliably the
+    // longest digit group on the line, while prefixes and suffixes like
+    // a copy number are short (1-2 digits) by comparison.
     function normalizeTicketNumber(s) {
       const digitRuns = (s || "").match(/\d+/g);
-      return digitRuns && digitRuns.length ? digitRuns[digitRuns.length - 1] : (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      if (!digitRuns || !digitRuns.length) return (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const longest = digitRuns.reduce((a, b) => (b.length > a.length ? b : a));
+      return longest.replace(/^0+(?=\d)/, "");
     }
     // Natural sort — compares the numeric part of a ticket number
     // numerically (so "AH-2" sorts before "AH-10", unlike plain string
