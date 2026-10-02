@@ -771,12 +771,13 @@
       if (sfSel) sfSel.innerHTML = opts;
     }
 
-    function pickRow(text, btnLabel, onClick, tone = "") {
+    function pickRow(text, btnLabel, onClick, tone = "", highlighted = false) {
       const row = document.createElement("div");
       row.className = "ticket-pick-row";
+      if (highlighted) row.style.cssText = "background:var(--gold-dark, #3A2F0E);border-left:3px solid var(--gold, #D4A017);padding-left:7px;";
       const span = document.createElement("span");
       span.style.flex = "1";
-      span.textContent = text;
+      span.textContent = (highlighted ? "✓ On settlement — " : "") + text;
       row.appendChild(span);
       const btn = document.createElement("button");
       btn.className = `small-btn ${tone}`.trim();
@@ -784,6 +785,14 @@
       btn.addEventListener("click", onClick);
       row.appendChild(btn);
       return row;
+    }
+    // Loose match for comparing a driver-typed ticket number against one
+    // Claude read off a settlement document — strips everything but
+    // letters/digits and uppercases, so minor formatting differences
+    // ("DAK 61431" vs "DAK-61431", stray spaces, a lowercase letter)
+    // don't cause a real match to be missed.
+    function normalizeTicketNumber(s) {
+      return (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
     }
     // Natural sort — compares the numeric part of a ticket number
     // numerically (so "AH-2" sorts before "AH-10", unlike plain string
@@ -1175,18 +1184,38 @@
             });
           }
 
-          const eligible = sortByTicketNumber(allHauls.filter((h) => h.checkStatus !== "none" && !assignedElsewhere.has(h.haulId) && h.destinationId === s.destination_id), (h) => h.ticketNumber);
+          // Matched against whatever ticket numbers Claude found on the
+          // uploaded settlement document, if one's been read — a loose
+          // match (letters/digits only, case-insensitive) so minor OCR
+          // formatting differences don't hide a real match.
+          const extractedSet = new Set((s.extracted_ticket_numbers || []).map(normalizeTicketNumber));
+          const isOnSettlement = (h) => extractedSet.size > 0 && extractedSet.has(normalizeTicketNumber(h.ticketNumber));
+          let eligible = sortByTicketNumber(allHauls.filter((h) => h.checkStatus !== "none" && !assignedElsewhere.has(h.haulId) && h.destinationId === s.destination_id), (h) => h.ticketNumber);
+          if (extractedSet.size > 0) {
+            // Matched tickets first, each group still sorted by ticket
+            // number within itself — easiest ones to act on right at the top.
+            eligible = [...eligible.filter(isOnSettlement), ...eligible.filter((h) => !isOnSettlement(h))];
+          }
           const pickLabel = document.createElement("div");
           pickLabel.style.cssText = "font-size:12px;color:var(--text-muted);margin:12px 0 6px;";
           pickLabel.textContent = `Unassigned loads for this buyer (${eligible.length})`;
           detail.appendChild(pickLabel);
+          if (s.document_path) {
+            const readNote = document.createElement("div");
+            readNote.className = "meta";
+            readNote.style.marginBottom = "6px";
+            if (s.extracted_ticket_numbers == null) readNote.textContent = "Reading the uploaded document for ticket numbers…";
+            else if (extractedSet.size === 0) readNote.textContent = "Read the uploaded document, but didn't find any ticket numbers on it.";
+            else readNote.textContent = `Found ${s.extracted_ticket_numbers.length} ticket number${s.extracted_ticket_numbers.length === 1 ? "" : "s"} on the uploaded document — matches highlighted below.`;
+            detail.appendChild(readNote);
+          }
           if (eligible.length === 0) {
             const none = document.createElement("div");
             none.className = "meta";
             none.textContent = "None right now.";
             detail.appendChild(none);
           } else {
-            eligible.forEach((h) => detail.appendChild(pickRow(haulSummary(h), "Assign", () => assignToSettlement(h.haulId, s.id), "gold")));
+            eligible.forEach((h) => detail.appendChild(pickRow(haulSummary(h), "Assign", () => assignToSettlement(h.haulId, s.id), "gold", isOnSettlement(h))));
           }
           card.appendChild(detail);
         }
@@ -1215,19 +1244,27 @@
       saveBtn.disabled = true;
       saveBtn.textContent = "Saving…";
       try {
+        let uploadedPath = null;
         if (file) {
           const path = `${crypto.randomUUID()}/${file.name}`;
           const { error: upErr } = await supabase.storage.from("settlements").upload(path, file);
           if (upErr) throw upErr;
           payload.document_path = path;
+          uploadedPath = path;
         }
-        const { error } = await supabase.from("settlements").insert(payload);
+        const { data: inserted, error } = await supabase.from("settlements").insert(payload).select().single();
         if (error) throw error;
         ["sf-date", "sf-amount", "sf-notes"].forEach((id) => (document.getElementById(id).value = ""));
         fileInput.value = "";
         settlementForm.style.display = "none";
         await fetchSettlements();
         render();
+        // Reading the document for ticket numbers is a nice-to-have on
+        // top of an already-saved settlement, not a precondition for
+        // it — runs in the background after the save's own UI feedback
+        // is already done, and a failure here never implies the
+        // settlement itself didn't save.
+        if (uploadedPath && inserted) readSettlementDocument(inserted.id, uploadedPath);
       } catch (err) {
         alert("Could not save: " + err.message);
       } finally {
@@ -1235,6 +1272,34 @@
         saveBtn.textContent = "Save settlement";
       }
     });
+
+    async function readSettlementDocument(settlementId, path) {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData?.session?.access_token;
+        if (!token) throw new Error("Not logged in");
+        const res = await fetch("/api/read-settlement", {
+          method: "POST",
+          headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ settlementId, path }),
+        });
+        if (!res.ok) {
+          const result = await res.json().catch(() => ({}));
+          throw new Error(result.error || `Request failed (${res.status})`);
+        }
+      } catch (err) {
+        // Quiet failure — the settlement itself is already saved fine;
+        // this only means the highlighting feature didn't kick in for
+        // this one. The "Reading…" note stays visible (extracted_ticket_
+        // numbers is still null) rather than silently acting like it ran
+        // and found nothing, which would look identical to a real "no
+        // matches" result and hide that something went wrong.
+        console.error("Could not read settlement document", err);
+      } finally {
+        await fetchSettlements();
+        render();
+      }
+    }
 
     // ---------------------------------------------------------------------
     // Dashboard
