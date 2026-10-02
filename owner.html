@@ -286,6 +286,7 @@
     let haulSortKey = "departed_at";
     let haulSortDir = "desc";
     const expandedHauls = new Set();
+    const readingSettlements = new Set(); // settlement ids with a read actively in flight right now
 
     let allDestinations = [];
     let allPartners = [];
@@ -1201,13 +1202,24 @@
           pickLabel.textContent = `Unassigned loads for this buyer (${eligible.length})`;
           detail.appendChild(pickLabel);
           if (s.document_path) {
-            const readNote = document.createElement("div");
+            const readRow = document.createElement("div");
+            readRow.style.cssText = "display:flex;align-items:center;gap:10px;margin-bottom:6px;";
+            const readNote = document.createElement("span");
             readNote.className = "meta";
-            readNote.style.marginBottom = "6px";
-            if (s.extracted_ticket_numbers == null) readNote.textContent = "Reading the uploaded document for ticket numbers…";
+            const reading = readingSettlements.has(s.id);
+            if (reading) readNote.textContent = "Reading the uploaded document for ticket numbers…";
+            else if (s.extracted_ticket_numbers == null) readNote.textContent = "This document hasn't been read for ticket numbers yet.";
             else if (extractedSet.size === 0) readNote.textContent = "Read the uploaded document, but didn't find any ticket numbers on it.";
             else readNote.textContent = `Found ${s.extracted_ticket_numbers.length} ticket number${s.extracted_ticket_numbers.length === 1 ? "" : "s"} on the uploaded document — matches highlighted below.`;
-            detail.appendChild(readNote);
+            readRow.appendChild(readNote);
+            if (!reading) {
+              const readBtn = document.createElement("button");
+              readBtn.className = "small-btn";
+              readBtn.textContent = s.extracted_ticket_numbers == null ? "Read for ticket numbers" : "Re-read document";
+              readBtn.addEventListener("click", (e) => { e.stopPropagation(); readSettlementDocument(s.id, s.document_path); });
+              readRow.appendChild(readBtn);
+            }
+            detail.appendChild(readRow);
           }
           if (eligible.length === 0) {
             const none = document.createElement("div");
@@ -1274,6 +1286,8 @@
     });
 
     async function readSettlementDocument(settlementId, path) {
+      readingSettlements.add(settlementId);
+      render();
       try {
         const { data: sessionData } = await supabase.auth.getSession();
         const token = sessionData?.session?.access_token;
@@ -1296,6 +1310,7 @@
         // matches" result and hide that something went wrong.
         console.error("Could not read settlement document", err);
       } finally {
+        readingSettlements.delete(settlementId);
         await fetchSettlements();
         render();
       }
