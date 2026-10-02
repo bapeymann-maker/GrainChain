@@ -17,6 +17,7 @@ import {
   getAllActiveDryerRuns,
   clearActiveDryerRun,
 } from "./db.js";
+import { pullDryerStatus, pullDryerReadingsForRun } from "./sync.js";
 
 // Worker roster (id, name, pin) comes from Supabase's `workers` table via
 // getReference("workers") — see state.workers below. Note: PINs are
@@ -212,6 +213,73 @@ async function restoreActiveDryerRuns() {
   setState({ dryerActive: active, dryerReadings: readings });
 }
 
+function mergeReadings(existing, incoming) {
+  const byId = new Map(existing.map((r) => [r.clientId, r]));
+  incoming.forEach((r) => byId.set(r.clientId, r));
+  return [...byId.values()];
+}
+
+// Reconciles this device's view of "what's running" against the
+// server's — the server's view (built from synced readings, see
+// add-dryer-cross-device-status.sql) is authoritative, since this
+// device's own local storage only knows about runs IT started. Called
+// on mount and whenever the operator opens Dryer operator fresh — never
+// blocks the screen from showing; it updates in the background once it
+// resolves, same reasoning as everything else that's non-critical to
+// the first paint.
+async function reconcileDryerStatus() {
+  const serverRuns = await pullDryerStatus();
+  if (serverRuns === null) return; // pull failed (offline, etc.) — leave local state untouched rather than risk wiping a real run because the server couldn't be asked
+  const byDryer = new Map(serverRuns.map((r) => [r.dryerName, r]));
+  let readingsToMerge = [];
+  let changed = false;
+
+  for (const dryerName of DRYER_NAMES) {
+    const serverRun = byDryer.get(dryerName);
+    const localRun = state.dryerActive[dryerName];
+
+    if (!serverRun) {
+      // Server says idle. If this device locally thinks it's running,
+      // it was stopped elsewhere — defer to the server.
+      if (localRun) {
+        await clearActiveDryerRun(dryerName);
+        state.dryerActive[dryerName] = null;
+        changed = true;
+      }
+      continue;
+    }
+
+    if (!localRun || localRun.runClientId !== serverRun.runClientId) {
+      // Server knows about a run this device doesn't — started
+      // elsewhere, or this is a fresh browser/device. Adopt it.
+      const active = {
+        runClientId: serverRun.runClientId,
+        sourceBinId: serverRun.sourceBinId,
+        destBinId: serverRun.destBinId,
+        crop: serverRun.crop,
+        status: serverRun.status,
+        startedAt: serverRun.startedAt,
+        workerId: state.worker ? state.worker.id : null,
+      };
+      await saveActiveDryerRun(dryerName, active);
+      state.dryerActive[dryerName] = active;
+      changed = true;
+    }
+
+    // Either way, pull every reading for this run — the readings list
+    // and "previous entry" default need to be correct even for readings
+    // logged on a different device.
+    const serverReadings = await pullDryerReadingsForRun(serverRun.runClientId);
+    readingsToMerge = readingsToMerge.concat(serverReadings);
+  }
+
+  if (readingsToMerge.length) {
+    state.dryerReadings = mergeReadings(state.dryerReadings, readingsToMerge);
+    changed = true;
+  }
+  if (changed) setState({});
+}
+
 function clearTruckFields() {
   Object.assign(state, {
     truck: null,
@@ -368,7 +436,10 @@ function homeScreen() {
   wrap.appendChild(
     bigButton("Dryer operator", {
       sub: dryersRunning > 0 ? `${dryersRunning} dryer${dryersRunning === 1 ? "" : "s"} running` : "Start a run, log readings, confirm grain status",
-      onClick: () => setState({ screen: "dryerHome" }),
+      onClick: () => {
+        setState({ screen: "dryerHome" });
+        reconcileDryerStatus(); // not awaited — screen shows immediately with what's known locally, updates once this resolves
+      },
     })
   );
   wrap.appendChild(h("div", { style: "margin-top:8px;" }, [linkButton("Log out", logOut)]));
@@ -1214,6 +1285,13 @@ async function startDryerRun() {
     plenumTemp: f.plenumTemp ? Number(f.plenumTemp) : null,
     notes: f.notes || null,
     workerId: state.worker.id,
+    // Carried on every reading, not just known via the run, so any
+    // device can see "what's running right now" from synced readings
+    // alone — see add-dryer-cross-device-status.sql.
+    sourceBinId: active.sourceBinId,
+    destBinId: active.destBinId,
+    crop: active.crop,
+    status: active.status,
   };
   const savedReading = await queueDryerReading(baselineReading);
   state.dryerActive[dryerName] = active;
@@ -1310,6 +1388,10 @@ async function saveDryerReading() {
     plenumTemp: f.plenumTemp ? Number(f.plenumTemp) : null,
     notes: f.notes || null,
     workerId: state.worker.id,
+    sourceBinId: active.sourceBinId,
+    destBinId: active.destBinId,
+    crop: active.crop,
+    status: active.status,
   };
   const saved = await queueDryerReading(reading);
   state.dryerReadings = [...state.dryerReadings, saved];
@@ -1490,6 +1572,7 @@ export async function mountApp(el) {
   installInactivityWatcher();
   render(); // draw the login screen immediately, don't block on network
   await Promise.all([refreshReference(), refreshTodayLog(), restoreActiveDryerRuns()]);
+  reconcileDryerStatus(); // not awaited — runs in the background, updates the screen once it resolves
 
   // sync.js dispatches this after every successful reference pull, so
   // a field/bin change (e.g. a clean-bin affidavit logged elsewhere)

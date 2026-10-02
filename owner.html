@@ -1443,12 +1443,44 @@
           ${partnerCardsHtml}
         </div>`;
 
+      // ---- Dryers running now — not period-scoped. Built from synced
+      // readings, same as every kiosk's own cross-device view of this —
+      // see add-dryer-cross-device-status.sql. Explicitly TENTATIVE:
+      // none of this has reached bin_levels yet, which only updates once
+      // a run is actually stopped. ----
+      const [{ data: dryerStatusRows, error: dryerStatusErr }, { data: dryerLiveRows, error: dryerLiveErr }] = await Promise.all([
+        supabase.from("dryer_current_status").select("*").eq("is_running", true),
+        supabase.from("dryer_live_estimates").select("*"),
+      ]);
+      const { data: binRows, error: binErr } = await supabase.from("bin_levels").select("*");
+      const binNameById = new Map((binRows || []).map((b) => [b.id, b.name]));
+      const liveEstimateByRun = new Map((dryerLiveRows || []).map((r) => [r.run_client_id, r.estimated_bushels]));
+      if ((dryerStatusRows || []).length) {
+        html += `<div class="dash-section-title">Dryers running now</div><div class="dash-grid">`;
+        dryerStatusRows.forEach((r) => {
+          const elapsedMs = Date.now() - new Date(r.started_at).getTime();
+          const hrs = Math.floor(elapsedMs / 3600000);
+          const mins = Math.round((elapsedMs % 3600000) / 60000);
+          const estimate = Math.round(liveEstimateByRun.get(r.run_client_id) || 0);
+          html += `
+            <div class="dash-card">
+              <div class="dash-card-title">${escapeHtml(r.dryer_name)}</div>
+              <div style="font-size:14px;color:var(--text);margin-bottom:4px;">${escapeHtml(r.crop || "—")} — ${escapeHtml(binNameById.get(r.source_bin_id) || r.source_bin_id || "—")} → ${escapeHtml(binNameById.get(r.dest_bin_id) || r.dest_bin_id || "—")}</div>
+              <div class="meta" style="margin-bottom:8px;">Running ${hrs}h ${mins}m</div>
+              <div class="dash-big-num">~${estimate.toLocaleString()} bu</div>
+              <div class="meta">tentative — not yet reflected below until the run is stopped</div>
+            </div>`;
+        });
+        html += `</div>`;
+      }
+      if (dryerStatusErr) html += `<div style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load dryer status: ${escapeHtml(dryerStatusErr.message)}</div>`;
+      if (dryerLiveErr) html += `<div style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load live dryer estimates: ${escapeHtml(dryerLiveErr.message)}</div>`;
+
       // ---- Bin inventory — right now, not period-scoped. Reads
       // bin_levels directly, the same live-computed view Deliveries
       // already uses for bin selection, so these numbers match exactly
       // what a driver sees when picking a bin. Sorted client-side rather
       // than relying on the query's own ordering. ----
-      const { data: binRows, error: binErr } = await supabase.from("bin_levels").select("*");
       const activeBins = (binRows || []).filter((b) => b.active !== false).sort((a, b) => (a.site || "").localeCompare(b.site || "") || (a.name || "").localeCompare(b.name || ""));
       const binRowsHtml = activeBins
         .map((b) => {

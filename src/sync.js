@@ -296,7 +296,77 @@ function toDryerReadingRow(r) {
     notes: r.notes || null,
     worker_id: r.workerId ?? null,
     device_id: config.deviceId,
+    // Carried on every reading (not just known via the run) so any
+    // device can reconstruct "what's running right now" from synced
+    // readings alone — see add-dryer-cross-device-status.sql.
+    source_bin_id: r.sourceBinId ?? null,
+    dest_bin_id: r.destBinId ?? null,
+    crop: r.crop ?? null,
+    status: r.status ?? null,
   };
+}
+
+// Supabase's row shape (snake_case) back to the kiosk's own in-app
+// reading shape (camelCase) — the reverse of toDryerReadingRow, used
+// when pulling another device's readings for a run this browser didn't
+// start itself.
+function fromDryerReadingRow(row) {
+  return {
+    clientId: row.client_id,
+    runClientId: row.run_client_id,
+    dryerName: row.dryer_name,
+    recordedAt: row.recorded_at,
+    wetPctIn: row.wet_pct_in,
+    dryPctOut: row.dry_pct_out,
+    dryTemp: row.dry_temp,
+    midgrainTemp: row.midgrain_temp,
+    dischargeRate: row.discharge_rate,
+    plenumTemp: row.plenum_temp,
+    notes: row.notes,
+    workerId: row.worker_id,
+    synced: true, // this came FROM the server — it's already synced by definition
+  };
+}
+
+// The server's view of what's running on each dryer right now,
+// reconstructed purely from synced readings — not from any one
+// browser's local storage. Returns only dryers that ARE running; an
+// idle dryer just doesn't appear. Never throws — callers get an empty
+// list if offline or the request fails, same as pullReferenceData.
+export async function pullDryerStatus() {
+  try {
+    const rows = await supabaseRequest(`/rest/v1/dryer_current_status?is_running=eq.true&select=*`);
+    return (rows || []).map((row) => ({
+      dryerName: row.dryer_name,
+      runClientId: row.run_client_id,
+      sourceBinId: row.source_bin_id,
+      destBinId: row.dest_bin_id,
+      crop: row.crop,
+      status: row.status,
+      startedAt: row.started_at,
+    }));
+  } catch (err) {
+    console.warn("Could not pull dryer status", err);
+    // null (not []) on failure — distinct from a genuinely empty result,
+    // so the caller can tell "server confirms nothing is running" apart
+    // from "couldn't ask the server at all." Treating a failed request
+    // as confirmed-empty would wipe out a legitimately running local run
+    // every time the kiosk is briefly offline.
+    return null;
+  }
+}
+
+// Every reading for one run, from the server — used when a browser
+// adopts a run it didn't start, so its readings list and "previous
+// entry" default are correct even though they were logged elsewhere.
+export async function pullDryerReadingsForRun(runClientId) {
+  try {
+    const rows = await supabaseRequest(`/rest/v1/dryer_readings?run_client_id=eq.${encodeURIComponent(runClientId)}&select=*&order=recorded_at.asc`);
+    return (rows || []).map(fromDryerReadingRow);
+  } catch (err) {
+    console.warn("Could not pull readings for run", runClientId, err);
+    return [];
+  }
 }
 
 function toDryerRunRow(run) {
