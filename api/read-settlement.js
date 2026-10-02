@@ -107,7 +107,10 @@ module.exports = async function handler(req, res) {
       },
       body: JSON.stringify({ extracted_ticket_numbers: ticketNumbers }),
     });
-    if (!saveRes.ok) throw new Error(`Could not save extracted ticket numbers (${saveRes.status})`);
+    if (!saveRes.ok) {
+      const bodyText = await saveRes.text().catch(() => "");
+      throw new Error(`Could not save extracted ticket numbers (${saveRes.status}): ${bodyText}`);
+    }
 
     return res.status(200).json({ ok: true, ticket_numbers: ticketNumbers });
   } catch (err) {
