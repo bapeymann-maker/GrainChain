@@ -787,13 +787,21 @@
       row.appendChild(btn);
       return row;
     }
-    // Loose match for comparing a driver-typed ticket number against one
-    // Claude read off a settlement document — strips everything but
-    // letters/digits and uppercases, so minor formatting differences
-    // ("DAK 61431" vs "DAK-61431", stray spaces, a lowercase letter)
-    // don't cause a real match to be missed.
+    // For matching a driver-typed ticket number against one Claude read
+    // off a settlement document. A straight normalized-string match
+    // isn't enough: the same ticket is routinely written two different
+    // ways in these two places — a driver types just the bare number
+    // ("61427"), but the ticket itself (and so the settlement) often
+    // prints it with the buyer's own prefix ("DAK 61427") — so an exact
+    // match after stripping punctuation still misses real matches.
+    // Comparing the trailing run of digits instead handles that: it's
+    // "61427" either way, prefix or no prefix. This can still be fooled
+    // by a ticket number format that puts something else (a date, a
+    // sub-ticket suffix) after the real number, but that's not the
+    // shape these tickets actually take.
     function normalizeTicketNumber(s) {
-      return (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const digitRuns = (s || "").match(/\d+/g);
+      return digitRuns && digitRuns.length ? digitRuns[digitRuns.length - 1] : (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
     }
     // Natural sort — compares the numeric part of a ticket number
     // numerically (so "AH-2" sorts before "AH-10", unlike plain string
