@@ -99,20 +99,15 @@ legibility_issues is ONLY for things you could not confidently read — leave it
 
 Copy handwritten notes exactly as written into handwritten_notes. Do not perform any arithmetic yourself — report the numbers as printed. If the photo does not contain a scale ticket at all, return null for every field and add one legibility_issues entry with field "other" saying so.`;
 
-module.exports = async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).end();
-  if (req.headers["x-webhook-secret"] !== process.env.WEBHOOK_SECRET) {
-    return res.status(401).json({ error: "bad webhook secret" });
-  }
-
-  const body = req.body || {};
-  // Accept either the Supabase webhook payload shape, or a plain
-  // {bucket, path} body for manually re-running a read (e.g. backfilling
-  // a photo that was uploaded before this was wired up).
-  const bucket = body.record?.bucket_id || body.bucket;
-  const path = body.record?.name || body.path;
+// The actual read-a-photo-and-save-a-row work, shared by the webhook
+// handler below and by api/retry-ticket-read.js (an authenticated,
+// owner-triggered path for re-running a read that never happened the
+// first time — a missed or failed webhook delivery, not a problem with
+// the ticket itself). Both callers already know the caller is
+// legitimate by the time this runs; this function itself does no auth.
+async function processTicketPhoto(bucket, path) {
   if (bucket !== "scale-tickets" || !path) {
-    return res.status(200).json({ skipped: true, reason: "not a scale-tickets photo" });
+    return { skipped: true, reason: "not a scale-tickets photo" };
   }
 
   // The upload path is <shipmentClientId>/<ticketClientId>.jpg (see
@@ -238,8 +233,33 @@ module.exports = async function handler(req, res) {
   });
   if (!saveRes.ok) {
     console.error("Could not save ticket_reads row", saveRes.status, await saveRes.text());
-    return res.status(500).json({ error: "could not save reading" });
+    const err = new Error("could not save reading");
+    err.httpStatus = 500;
+    throw err;
   }
 
-  return res.status(200).json({ ok: true, needs_review: record.needs_review });
+  return { ok: true, needs_review: record.needs_review };
 }
+
+module.exports = async function handler(req, res) {
+  if (req.method !== "POST") return res.status(405).end();
+  if (req.headers["x-webhook-secret"] !== process.env.WEBHOOK_SECRET) {
+    return res.status(401).json({ error: "bad webhook secret" });
+  }
+
+  const body = req.body || {};
+  // Accept either the Supabase webhook payload shape, or a plain
+  // {bucket, path} body for manually re-running a read.
+  const bucket = body.record?.bucket_id || body.bucket;
+  const path = body.record?.name || body.path;
+
+  try {
+    const result = await processTicketPhoto(bucket, path);
+    if (result.skipped) return res.status(200).json(result);
+    return res.status(200).json(result);
+  } catch (err) {
+    return res.status(err.httpStatus || 500).json({ error: String(err.message || err) });
+  }
+}
+
+module.exports.processTicketPhoto = processTicketPhoto;

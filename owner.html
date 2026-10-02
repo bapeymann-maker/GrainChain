@@ -1727,6 +1727,32 @@
         wrap.appendChild(btn);
       }
 
+      // "Waiting on AI read" means the ticket was saved but no
+      // ticket_reads row exists at all — the Storage webhook that should
+      // have triggered the read either never fired or failed before it
+      // could even log an error. "AI read failed" means it fired but hit
+      // a problem (bad download, model error) that's recorded on the row.
+      // Either way, a retry re-runs the SAME read against the SAME photo
+      // — it has nothing to do with the ticket's own printed numbers, so
+      // it's offered only for these two states, not for an actual flagged
+      // arithmetic/legibility issue on a reading that succeeded.
+      const readNeverHappened = r.checkLabel === "Waiting on AI read";
+      const readFailed = r.checkLabel === "AI read failed";
+      if ((readNeverHappened || readFailed) && r.photoPath) {
+        const retryWrap = document.createElement("div");
+        retryWrap.style.cssText = "margin-top:12px;display:flex;align-items:center;gap:10px;";
+        const note = document.createElement("span");
+        note.className = "meta";
+        note.textContent = readFailed ? (r._read?.error || "The AI read failed.") : "The AI never read this ticket — the photo upload likely missed its trigger.";
+        retryWrap.appendChild(note);
+        const retryBtn = document.createElement("button");
+        retryBtn.className = "small-btn gold";
+        retryBtn.textContent = "Retry AI read";
+        retryBtn.addEventListener("click", (e) => { e.stopPropagation(); retryAiRead(r.photoPath, retryBtn); });
+        retryWrap.appendChild(retryBtn);
+        wrap.appendChild(retryWrap);
+      }
+
       // A flagged reading can be marked as checked by a human — it stays
       // flagged in the underlying data (the math/AI record doesn't change),
       // it just stops showing as needing attention. Only shown when there's
@@ -1754,6 +1780,30 @@
         wrap.appendChild(reviewWrap);
       }
       return wrap;
+    }
+
+    async function retryAiRead(photoPath, btn) {
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Reading…";
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData?.session?.access_token;
+        if (!token) throw new Error("Not logged in");
+        const res = await fetch("/api/retry-ticket-read", {
+          method: "POST",
+          headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ path: photoPath }),
+        });
+        const result = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(result.error || `Request failed (${res.status})`);
+        await fetchHauls();
+        render();
+      } catch (err) {
+        alert("Could not retry the AI read: " + err.message);
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
     }
 
     async function setReadReviewed(readId, reviewed) {
