@@ -1228,6 +1228,18 @@
               readRow.appendChild(readBtn);
             }
             detail.appendChild(readRow);
+            if (extractedSet.size > 0) {
+              // Shows exactly what Claude actually extracted, verbatim —
+              // not for everyday use, but the fastest way to see why a
+              // match isn't landing when one looks like it should: the
+              // mismatch is usually visible immediately sitting right
+              // next to the ticket numbers in the list below.
+              const rawList = document.createElement("div");
+              rawList.className = "meta";
+              rawList.style.cssText = "margin-bottom:10px;opacity:0.7;";
+              rawList.textContent = `As read from the document: ${s.extracted_ticket_numbers.join(", ")}`;
+              detail.appendChild(rawList);
+            }
           }
           if (eligible.length === 0) {
             const none = document.createElement("div");
