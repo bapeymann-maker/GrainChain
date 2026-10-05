@@ -46,9 +46,13 @@ export function createHaul(ctx) {
   // What the driver has picked so far for a new haul. Persists between
   // hauls so the last trailer/bin/destination come up pre-highlighted.
   const haul = {
-    // "haul" = bin/field -> buyer. "fieldLoad" = just signing a truck
-    // affidavit for a load going field -> bins (the kiosk logs the load itself).
+    // "haul" = starting a haul. "affidavit" = just signing a truck affidavit
+    // beforehand, for a load from a field (the kiosk logs that load itself)
+    // or from a bin (the haul started from it will use this affidavit).
     mode: "haul",
+    // Set when the driver would rather sign a new affidavit than use the one
+    // already signed for this bin and trailer.
+    signNew: false,
     // The id the haul about to be saved WILL have — made up front so the
     // truck affidavit signed just before it can point at it.
     pendingClientId: null,
@@ -266,7 +270,7 @@ export function createHaul(ctx) {
             return;
           }
           haul.error = "";
-          setState({ screen: haul.mode === "fieldLoad" ? "haulField" : "haulOrigin" });
+          setState({ screen: "haulOrigin" });
         },
       })
     );
@@ -277,15 +281,16 @@ export function createHaul(ctx) {
   // ---------- 1b. Where is the grain coming from? ----------
   function originScreen() {
     const wrap = col();
-    add(wrap, title("Where's the grain coming from?"));
+    add(wrap, title(haul.mode === "affidavit" ? "Loading from where?" : "Where's the grain coming from?"));
     const option = (value, heading, sub, screen) => {
-      const selected = haul.origin === value;
+      // "same as last haul" only means something when starting a haul
+      const selected = haul.mode === "haul" && haul.origin === value;
       return h(
         "button",
         {
           style: choiceStyle(selected),
           onclick: () => {
-            haul.origin = value;
+            if (haul.mode === "haul") haul.origin = value;
             setState({ screen });
           },
         },
@@ -307,8 +312,8 @@ export function createHaul(ctx) {
   // ---------- 2b. Field (when hauling straight from a field) ----------
   function fieldScreen() {
     const wrap = col();
-    const fieldLoad = haul.mode === "fieldLoad";
-    const backFromField = () => setState({ screen: fieldLoad ? "haulTrailer" : "haulOrigin" });
+    const fieldLoad = haul.mode === "affidavit";
+    const backFromField = () => setState({ screen: "haulOrigin" });
     add(wrap, title("Which field?"), hint(fieldLoad ? "The field you're loading from." : "Straight from the field to the buyer."));
     if (state.fields.length === 0) {
       add(wrap, emptyNote("No fields synced yet. Make sure this device has connected to the internet at least once since setup."));
@@ -375,7 +380,7 @@ export function createHaul(ctx) {
             "data-name": f.name.toLowerCase(),
             "data-selected": selected ? "true" : null,
             onclick: () => {
-              if (fieldLoad) return beginFieldLoadAffidavit(f);
+              if (fieldLoad) return beginFieldAffidavit(f);
               haul.fieldId = f.id;
               haul.crop = normCrop(f.crop) || haul.crop;
               setState({ screen: "haulDest" });
@@ -446,6 +451,7 @@ export function createHaul(ctx) {
               style: `${choiceStyle(selected)}display:flex;align-items:center;justify-content:space-between;`,
               "data-selected": selected ? "true" : null,
               onclick: () => {
+                if (haul.mode === "affidavit") return beginBinAffidavit(b);
                 haul.binId = b.id;
                 haul.crop = normCrop(b.crop) || haul.crop;
                 setState({ screen: "haulDest" });
@@ -763,7 +769,19 @@ export function createHaul(ctx) {
 
     add(wrap, errorLine(haul.error));
     if (needsAffidavit(originStatus)) {
-      add(wrap, h("div", { "data-role": "affidavit-heads-up", style: `font-size:13px;color:${COLORS.gold};` }, `${originStatus === "organic" ? "Organic" : "Transitional"} load — you'll sign a truck affidavit next.`));
+      const kind = originStatus === "organic" ? "Organic" : "Transitional";
+      const already = findPresignedAffidavit();
+      if (already && !haul.signNew) {
+        add(
+          wrap,
+          h("div", { "data-role": "affidavit-presigned", style: `font-size:13px;color:${COLORS.gold};` },
+            `${kind} load — truck affidavit already signed at ${new Date(already.signedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}. It will go with this haul.`),
+          linkButton("Sign a new one instead", () => { haul.signNew = true; rerender(); })
+        );
+      } else {
+        add(wrap, h("div", { "data-role": "affidavit-heads-up", style: `font-size:13px;color:${COLORS.gold};` }, `${kind} load — you'll sign a truck affidavit next.`));
+        if (already) add(wrap, linkButton("Use the one already signed", () => { haul.signNew = false; rerender(); }));
+      }
     }
     add(wrap, bigButton("Start haul — heading out", { tone: "gold", onClick: startHaul }));
     add(wrap, linkButton("← Back", () => setState({ screen: "haulDest" })));
@@ -825,6 +843,13 @@ export function createHaul(ctx) {
     // affidavit are written together.
     if (needsAffidavit(originStatus)) {
       const clientId = haul.pendingClientId || (haul.pendingClientId = crypto.randomUUID());
+      // Already signed for this bin and trailer? Then the haul just records
+      // which affidavit it used — no second signature.
+      const already = haul.signNew ? null : findPresignedAffidavit();
+      if (already) {
+        await commitHaul({ ...payload, clientId, affidavitClientId: already.clientId }, destination, originName, null, already);
+        return;
+      }
       affidavit.begin({
         base: {
           context: "haul",
@@ -847,7 +872,7 @@ export function createHaul(ctx) {
     await commitHaul(payload, destination, originName, null);
   }
 
-  async function commitHaul(payload, destination, originName, affidavitRecord) {
+  async function commitHaul(payload, destination, originName, affidavitRecord, usedAffidavit = null) {
     if (haul.saving) return;
     haul.saving = true;
     try {
@@ -857,11 +882,17 @@ export function createHaul(ctx) {
       if (affidavitRecord) await queueAffidavit({ ...affidavitRecord, shipmentClientId: payload.clientId });
       await queueShipment(payload);
       haul.pendingClientId = null;
+      haul.signNew = false;
       await refreshLocal(true);
+      const affidavitNote = affidavitRecord
+        ? "Truck affidavit signed. "
+        : usedAffidavit
+        ? `Truck affidavit signed earlier (${new Date(usedAffidavit.signedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}) goes with this haul. `
+        : "";
       haul.done = {
         title: "Haul started",
         line: `${rigText(haul.truck, haul.trailer)} · ${originName} → ${destText(destination)}`,
-        note: (affidavitRecord ? "Truck affidavit signed. " : "") + "When you get your scale ticket, open “Scale tickets” on the home screen to enter the numbers and take a photo of it.",
+        note: affidavitNote + "When you get your scale ticket, open “Scale tickets” on the home screen to enter the numbers and take a photo of it.",
       };
       haul.estMode = "full";
       haul.estValue = "";
@@ -879,13 +910,17 @@ export function createHaul(ctx) {
     }
   }
 
-  // ---------- Field-load affidavit (no haul: the kiosk logs the load) ----------
-  function beginFieldLoadAffidavit(field) {
+  // ---------- Truck affidavit signed beforehand (the "Truck affidavit" tile) ----------
+  const NO_AFFIDAVIT_NOTE = "Truck affidavits are only needed for organic and transitional loads.";
+
+  // From a FIELD. No haul is started: the load goes to a bin and is logged on
+  // the kiosk, which is a different device — the owner page pairs the two.
+  function beginFieldAffidavit(field) {
     if (!needsAffidavit(field.status)) {
       haul.done = {
         title: "No affidavit needed",
         line: `${field.name} is ${field.status || "not certified"} — nothing was saved.`,
-        note: "Truck affidavits are only needed for organic and transitional loads.",
+        note: NO_AFFIDAVIT_NOTE,
       };
       setState({ screen: "haulDone" });
       return;
@@ -918,16 +953,83 @@ export function createHaul(ctx) {
     setState({ screen: "haulAffidavit" });
   }
 
+  // From a BIN, for a load that will go to the elevator. Signed now, before
+  // loading; when the haul is started from this bin with this trailer it uses
+  // this affidavit instead of asking again (see findPresignedAffidavit).
+  function beginBinAffidavit(bin) {
+    if (!needsAffidavit(bin.status)) {
+      haul.done = {
+        title: "No affidavit needed",
+        line: `${bin.name} is ${bin.status || "not certified"} — nothing was saved.`,
+        note: NO_AFFIDAVIT_NOTE,
+      };
+      setState({ screen: "haulDone" });
+      return;
+    }
+    affidavit.begin({
+      base: {
+        context: "bin_load",
+        trailer: haul.trailer,
+        truck: haul.truck,
+        originType: "bin",
+        fieldId: null,
+        binId: bin.id,
+        originStatus: bin.status,
+        crop: normCrop(bin.crop),
+      },
+      summary: { from: bin.name },
+      onSigned: async (record) => {
+        await queueAffidavit(record);
+        await refreshLocal(true);
+        haul.done = {
+          title: "Affidavit signed",
+          line: `${rigText(haul.truck, haul.trailer)} · ${bin.name} (${bin.status})`,
+          note:
+            haul.trailer === EXTERNAL
+              ? "Go ahead and load. Outside trailers can't be matched ahead of time, so you'll sign again when you start the haul."
+              : "Go ahead and load. When you start the haul from this bin with this trailer, it will use this affidavit — you won't be asked to sign again.",
+        };
+        setState({ screen: "haulDone" });
+        syncSoon();
+      },
+      onBack: () => setState({ screen: "haulBin" }),
+    });
+    setState({ screen: "haulAffidavit" });
+  }
+
+  // An affidavit already signed on THIS phone for the bin and trailer of the
+  // haul being started, within the last 12 hours, that no haul has used yet.
+  // Oldest first, so two signed in a row are used in order.
+  //   - bins only: a bin load can only ever leave as a haul, and every haul
+  //     records which affidavit it used, so "not used yet" is certain. (A
+  //     field load might instead have been logged on the kiosk, which this
+  //     phone can't see — those are never reused here.)
+  //   - never for an outside trailer: they all share the name "External", so
+  //     one could end up attached to a different physical trailer.
+  const PRESIGNED_WINDOW_MS = 12 * 60 * 60 * 1000;
+  function findPresignedAffidavit() {
+    if (haul.origin !== "bin" || !haul.binId || !haul.trailer || haul.trailer === EXTERNAL) return null;
+    const used = new Set(local.shipments.map((s) => s.affidavitClientId).filter(Boolean));
+    const oldest = Date.now() - PRESIGNED_WINDOW_MS;
+    return (
+      local.affidavits
+        .filter((a) => a.context === "bin_load" && a.trailer === haul.trailer && a.binId === haul.binId && !used.has(a.clientId) && new Date(a.signedAt).getTime() >= oldest)
+        .sort((x, y) => new Date(x.signedAt) - new Date(y.signedAt))[0] || null
+    );
+  }
+
   // Entry points from the home screen. Each resets what the other left behind.
   function beginHaulFlow() {
     haul.mode = "haul";
     haul.pendingClientId = null;
+    haul.signNew = false;
     haul.error = "";
     setState({ screen: "haulTrailer" });
   }
-  function beginFieldLoadFlow() {
-    haul.mode = "fieldLoad";
+  function beginAffidavitFlow() {
+    haul.mode = "affidavit";
     haul.pendingClientId = null;
+    haul.signNew = false;
     haul.error = "";
     setState({ screen: "haulTrailer" });
   }
@@ -1346,7 +1448,7 @@ export function createHaul(ctx) {
     needsTicketCount,
     restoreDraftIfAny,
     beginHaulFlow,
-    beginFieldLoadFlow,
+    beginAffidavitFlow,
     screens: {
       haulAffidavit: affidavit.screen,
       haulTrailer: trailerScreen,

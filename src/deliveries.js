@@ -201,9 +201,9 @@ function homeScreen() {
     })
   );
   wrap.appendChild(
-    bigButton("Truck affidavit — field load", {
-      sub: "Sign before you load organic or transitional grain at a field",
-      onClick: () => haul.beginFieldLoadFlow(),
+    bigButton("Truck affidavit", {
+      sub: "Sign before you load organic or transitional grain — from a field or a bin",
+      onClick: () => haul.beginAffidavitFlow(),
     })
   );
   wrap.appendChild(

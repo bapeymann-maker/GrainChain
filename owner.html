@@ -736,6 +736,8 @@
 
         return {
           haulId: s.client_id,
+          // the truck affidavit signed beforehand that this haul used, if any
+          affidavitClientId: s.affidavit_client_id || null,
           crop: s.crop,
           originType: s.origin_type,
           splitPartnerId: s.split_partner_id,
@@ -1394,7 +1396,9 @@
     // link to their affidavit directly. Field-to-bin loads are logged on the
     // kiosk, a separate device from the phone the driver signed on, so those
     // are paired up by trailer + field + time instead.
-    const AFFIDAVIT_FARM_NAME = "Ufer Farms Partnership";
+    // Letterhead, as on the farm's existing paper form.
+    const AFFIDAVIT_FARM_NAME = "Ufer Farms Organics";
+    const AFFIDAVIT_FARM_LINES = ["Organic Crop Producer", "1543 210th St, Truman, MN 56088", "Phone: (507) 236-6180 · E-mail: uferfarmsaccounting@yahoo.com"];
     const AFFIDAVIT_CONDITION_LABEL = { last_used_organic: "Last used for organic", inspected_clean: "Inspected and is clean", inspected_cleaned: "Inspected and cleaned" };
     const AFFIDAVIT_METHOD_LABEL = { swept: "Swept", blown: "Blown", washed: "Washed" };
     const AFFIDAVIT_START_KEY = "grainchain_affidavit_start";
@@ -1485,7 +1489,13 @@
       return { byLoad, affToLoad };
     }
 
-    const haulAffidavit = (h) => allAffidavits.find((a) => a.context === "haul" && a.shipment_client_id === h.haulId) || null;
+    // Either signed as part of starting the haul, or signed beforehand with
+    // the Truck affidavit tile and named by the haul when it used it.
+    const haulAffidavit = (h) =>
+      allAffidavits.find((a) => a.context === "haul" && a.shipment_client_id === h.haulId) ||
+      (h.affidavitClientId ? allAffidavits.find((a) => a.client_id === h.affidavitClientId) : null) ||
+      null;
+    const haulUsing = (a) => allHauls.find((h) => h.haulId === a.shipment_client_id || h.affidavitClientId === a.client_id) || null;
 
     function affidavitOriginLabel(a) {
       const name = affidavitOriginNames.get(a.field_id || a.bin_id) || a.field_id || a.bin_id || "—";
@@ -1497,9 +1507,9 @@
       return methods.length ? `${base}: ${methods.join(", ")}` : base;
     }
     function affidavitCoversLabel(a, matches) {
-      if (a.context === "haul") {
-        const h = allHauls.find((x) => x.haulId === a.shipment_client_id);
-        if (!h) return "Haul";
+      if (a.context === "haul" || a.context === "bin_load") {
+        const h = haulUsing(a);
+        if (!h) return a.context === "bin_load" ? "Bin load — no haul started against it yet" : "Haul";
         return `Haul to ${h.destination}${h.ticketNumber && h.ticketNumber !== "—" ? " · ticket #" + h.ticketNumber : ""}`;
       }
       const load = matches.affToLoad.get(a.client_id);
@@ -1612,58 +1622,77 @@
     }
 
     // ---- the printable page ----
+    // Laid out like the farm's existing "Off-Farm Transportation Cleaning
+    // Affidavit" (shipper, bin, destination, trucking firm, dates, crop,
+    // certification, signature, and the line saying it travels with the Bill
+    // of Lading) — plus the record fingerprint, which the paper form can't have.
     function buildAffidavitHtml(a, o = {}) {
       const e = escapeHtml;
       const fmt = (iso) => new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+      const day = (iso) => new Date(iso).toLocaleDateString([], { dateStyle: "medium" });
       const box = (on) => (on ? "☒" : "☐");
       const methods = a.cleaning_methods || [];
+      const blank = (v) => (v ? e(v) : '<span class="blank"></span>');
+      const own = a.truck !== "External" && a.trailer !== "External";
+      const offFarm = a.context !== "field_load"; // a field-to-bin load stays on the farm
       const verdict = (ok, good, bad, unknown) =>
         ok === true ? `<span class="ok">✓ ${e(good)}</span>` : ok === false ? `<span class="bad">⚠ ${e(bad)}</span>` : `<span class="unknown">${e(unknown)}</span>`;
       return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Truck affidavit — ${e(a.trailer)} — ${e(fmt(a.signed_at))}</title>
 <style>
-  @page { size: letter; margin: 0.6in; }
-  body { font-family: Georgia, 'Times New Roman', serif; color: #111; max-width: 7.2in; margin: 0 auto; padding: 24px 0; }
-  h1 { font-size: 22px; letter-spacing: 1px; text-transform: uppercase; margin: 0 0 2px; }
-  .sub { color: #444; font-size: 13px; margin-bottom: 18px; border-bottom: 2px solid #111; padding-bottom: 10px; }
-  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .6px; margin: 20px 0 8px; }
+  @page { size: letter; margin: 0.55in; }
+  body { font-family: Georgia, 'Times New Roman', serif; color: #111; max-width: 7.3in; margin: 0 auto; padding: 20px 0; }
+  .letterhead { text-align: center; border-bottom: 2px solid #111; padding-bottom: 8px; margin-bottom: 14px; }
+  .letterhead .name { font-size: 24px; font-weight: bold; letter-spacing: .5px; }
+  .letterhead div { font-size: 12.5px; color: #333; line-height: 1.45; }
+  h1 { font-size: 19px; text-align: center; margin: 4px 0 14px; }
   table.facts { border-collapse: collapse; width: 100%; font-size: 14px; }
-  table.facts td { padding: 5px 8px; border-bottom: 1px solid #ccc; vertical-align: top; }
-  table.facts td:first-child { width: 32%; color: #444; }
-  ul.checks { list-style: none; padding: 0; margin: 0; font-size: 15px; }
-  ul.checks li { padding: 3px 0; }
-  p.statement { font-size: 13.5px; line-height: 1.5; margin: 0; }
-  .sig { margin-top: 26px; }
-  .sig img { display: block; max-width: 3.4in; max-height: 1.3in; border-bottom: 1px solid #111; }
-  .sig .missing { height: 0.9in; width: 3.4in; border-bottom: 1px solid #111; color: #a00; font-size: 12px; padding-top: 0.5in; }
-  .sig .who { font-size: 13px; margin-top: 4px; }
-  .record { margin-top: 28px; padding-top: 10px; border-top: 1px solid #999; font-family: 'Courier New', monospace; font-size: 10.5px; color: #333; line-height: 1.6; word-break: break-all; }
+  table.facts td { padding: 5px 6px; border-bottom: 1px solid #bbb; vertical-align: bottom; }
+  table.facts td:first-child { width: 30%; color: #333; }
+  .blank { display: inline-block; min-width: 3in; border-bottom: 1px solid #111; height: 1em; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; margin: 16px 0 6px; }
+  ul.checks { list-style: none; padding: 0; margin: 0; font-size: 14.5px; }
+  ul.checks li { padding: 2px 0; }
+  p.statement { font-size: 13px; line-height: 1.5; margin: 0; }
+  .sigrow { display: flex; gap: 18px; align-items: flex-end; margin-top: 18px; font-size: 14px; }
+  .sigrow .cell { flex: 1; }
+  .sigrow .cap { font-size: 11px; color: #444; border-top: 1px solid #111; margin-top: 3px; padding-top: 2px; }
+  .sig img { display: block; max-width: 3in; max-height: 1.1in; }
+  .sig .nosig { height: 0.8in; color: #a00; font-size: 12px; padding-top: 0.45in; }
+  .bol { margin-top: 18px; font-size: 14px; }
+  .bol .cap { font-size: 11px; color: #444; }
+  .record { margin-top: 22px; padding-top: 8px; border-top: 1px solid #999; font-family: 'Courier New', monospace; font-size: 10px; color: #333; line-height: 1.55; word-break: break-all; }
   .ok { color: #1a6b1a; } .bad { color: #b00; font-weight: bold; } .unknown { color: #666; }
 </style></head><body>
-<h1>Truck Cleanliness Affidavit</h1>
-<div class="sub">${e(AFFIDAVIT_FARM_NAME)} · transport of organic and transitional grain</div>
+<div class="letterhead"><div class="name">${e(AFFIDAVIT_FARM_NAME)}</div>${AFFIDAVIT_FARM_LINES.map((l) => `<div>${e(l)}</div>`).join("")}</div>
+<h1>${offFarm ? "Off-Farm" : "On-Farm"} Transportation Cleaning Affidavit</h1>
 <table class="facts">
-  <tr><td>Driver</td><td>${e(a.worker_name || a.worker_id)}</td></tr>
   <tr><td>Truck / trailer</td><td>${e([a.truck && (a.truck === "External" ? "External truck" : `Truck ${a.truck}`), a.trailer === "External" ? "External trailer" : `Trailer ${a.trailer}`].filter(Boolean).join(" · "))}</td></tr>
-  <tr><td>Loading from</td><td>${e(o.fromLabel || "—")}</td></tr>
-  <tr><td>Grain status</td><td>${e(a.origin_status[0].toUpperCase() + a.origin_status.slice(1))}${a.crop ? " · " + e(a.crop) : ""}</td></tr>
+  <tr><td>Shipper</td><td>${e(AFFIDAVIT_FARM_NAME)}</td></tr>
+  <tr><td>${a.origin_type === "bin" ? "Bin number" : "Field"}</td><td>${e(o.originName || "—")}</td></tr>
+  <tr><td>Destination</td><td>${blank(o.destination)}</td></tr>
+  <tr><td>Trucking / shipping firm</td><td>${own ? e(AFFIDAVIT_FARM_NAME) : blank("")}</td></tr>
+  <tr><td>Date loaded</td><td>${blank(o.loadedAt ? fmt(o.loadedAt) : "")}</td></tr>
+  <tr><td>Date delivered</td><td>${blank(o.deliveredOn)}</td></tr>
+  <tr><td>Crop / product</td><td>${e([a.crop, a.origin_status[0].toUpperCase() + a.origin_status.slice(1)].filter(Boolean).join(" · "))}</td></tr>
   <tr><td>This affidavit covers</td><td>${e(o.coversLabel || "—")}</td></tr>
-  <tr><td>Signed</td><td>${e(fmt(a.signed_at))} <span style="color:#666">(driver's phone clock)</span></td></tr>
-  <tr><td>Received by the system</td><td>${e(a.created_at ? fmt(a.created_at) : "—")}</td></tr>
 </table>
-<h2>Condition of the trailer</h2>
+<h2>Condition of the equipment before loading</h2>
 <ul class="checks">
   <li>${box(a.condition === "last_used_organic")} Last used for organic</li>
   <li>${box(a.condition === "inspected_clean")} Inspected and is clean</li>
   <li>${box(a.condition === "inspected_cleaned")} Inspected and cleaned</li>
 </ul>
-${a.condition === "inspected_cleaned" ? `<h2>Cleaned by</h2><ul class="checks"><li>${box(methods.includes("swept"))} Swept &nbsp;&nbsp; ${box(methods.includes("blown"))} Blown &nbsp;&nbsp; ${box(methods.includes("washed"))} Washed</li></ul>` : ""}
-<h2>Statement</h2>
+${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h2><ul class="checks"><li>${box(methods.includes("swept"))} Swept &nbsp;&nbsp; ${box(methods.includes("blown"))} Air blown &nbsp;&nbsp; ${box(methods.includes("washed"))} Washed</li></ul>` : ""}
+<h2>Certification</h2>
 <p class="statement">${e(a.statement)}</p>
-<div class="sig">
-  ${o.signatureDataUrl ? `<img src="${e(o.signatureDataUrl)}" alt="Signature">` : `<div class="missing">Signature image could not be loaded</div>`}
-  <div class="who">${e(a.worker_name || a.worker_id)} · ${e(fmt(a.signed_at))}</div>
+<div class="sigrow">
+  <div class="cell sig">${o.signatureDataUrl ? `<img src="${e(o.signatureDataUrl)}" alt="Signature">` : `<div class="nosig">Signature image could not be loaded</div>`}<div class="cap">Signed — ${e(a.worker_name || a.worker_id)}</div></div>
+  <div class="cell">${e(day(a.signed_at))}<div class="cap">Date</div></div>
+  <div class="cell">Truck driver<div class="cap">Title (Owner, Truck Driver, etc.)</div></div>
 </div>
+<div class="bol">This form must accompany the Bill of Lading to: ${blank(o.destination)}<div class="cap">(Unloading or delivery point)</div></div>
 <div class="record">
+  Signed ${e(fmt(a.signed_at))} on the driver's phone · received by the system ${e(a.created_at ? fmt(a.created_at) : "—")}<br>
   Record ID ${e(a.client_id)}<br>
   Fingerprint (SHA-256) ${e(a.record_hash || "—")}<br>
   ${verdict(a.hash_ok, "Record unchanged since it was signed", "RECORD HAS CHANGED SINCE IT WAS SIGNED — do not rely on this copy", "Record not checked")}<br>
@@ -1701,7 +1730,18 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaned by</h2><ul class="checks"><
       try {
         const sig = await loadAffidavitSignature(a);
         const matches = loadAffidavitMatches();
-        const html = buildAffidavitHtml(a, { fromLabel: affidavitOriginLabel(a), coversLabel: affidavitCoversLabel(a, matches), signatureDataUrl: sig.dataUrl, signatureOk: sig.ok });
+        const haul = haulUsing(a);
+        const load = matches.affToLoad.get(a.client_id) || null;
+        const html = buildAffidavitHtml(a, {
+          originName: affidavitOriginNames.get(a.field_id || a.bin_id) || a.field_id || a.bin_id,
+          coversLabel: affidavitCoversLabel(a, matches),
+          destination: haul ? haul.destination : "",
+          loadedAt: haul ? haul.departed_at : load ? load.logged_at : null,
+          // as read from the scale ticket (or as corrected), when the haul has one
+          deliveredOn: haul && haul._read && !haul._read.error ? (haul._read.field_corrections && haul._read.field_corrections.ticket_date && haul._read.field_corrections.ticket_date.value) || haul._read.ticket_date || "" : "",
+          signatureDataUrl: sig.dataUrl,
+          signatureOk: sig.ok,
+        });
         w.document.open();
         w.document.write(html);
         w.document.close();

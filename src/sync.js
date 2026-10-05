@@ -312,7 +312,7 @@ function toLoadRow(load) {
 }
 
 function toShipmentRow(s) {
-  return {
+  const row = {
     client_id: s.clientId,
     departed_at: s.departedAt,
     worker_id: s.workerId,
@@ -333,6 +333,10 @@ function toShipmentRow(s) {
     est_weight_lb: s.estWeightLb ?? null,
     device_id: config.deviceId,
   };
+  // Which truck affidavit (signed beforehand) this haul used. Only sent when
+  // there is one, so an ordinary haul never depends on the column existing.
+  if (s.affidavitClientId) row.affidavit_client_id = s.affidavitClientId;
+  return row;
 }
 
 function toTicketRow(t) {
