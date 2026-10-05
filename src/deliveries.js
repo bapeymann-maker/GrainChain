@@ -25,6 +25,7 @@ const state = {
   workers: [],
   destinations: [],
   recentShipments: [],
+  trailerContext: [], // per trailer: newest affidavit + newest recorded use (pre-fills the truck affidavit)
 };
 
 let root = null;
@@ -39,12 +40,13 @@ function setState(patch) {
 const haul = createHaul({ state, setState, h, bigButton, linkButton, badge, COLORS, HEAD, BODY, TRUCKS, TRUCK_BUSHELS });
 
 async function refreshReference() {
-  const [bins, fields, workers, destinations, recentShipments] = await Promise.all([
+  const [bins, fields, workers, destinations, recentShipments, trailerContext] = await Promise.all([
     getReference("bins"),
     getReference("fields"),
     getReference("workers"),
     getReference("destinations"),
     getReference("recent_shipments"),
+    getReference("trailer_context"),
   ]);
   Object.assign(state, {
     bins: bins || [],
@@ -52,6 +54,7 @@ async function refreshReference() {
     workers: workers || [],
     destinations: destinations || [],
     recentShipments: recentShipments || [],
+    trailerContext: trailerContext || [],
   });
   // Background syncs refresh this every ~30s. If someone is mid-typing,
   // update the data quietly instead of re-drawing the screen — a redraw
@@ -194,7 +197,13 @@ function homeScreen() {
     bigButton("Start a haul", {
       tone: n > 0 ? "default" : "gold",
       sub: "Trailer, bin and destination — do this before you leave the bin",
-      onClick: () => setState({ screen: "haulTrailer" }),
+      onClick: () => haul.beginHaulFlow(),
+    })
+  );
+  wrap.appendChild(
+    bigButton("Truck affidavit — field load", {
+      sub: "Sign before you load organic or transitional grain at a field",
+      onClick: () => haul.beginFieldLoadFlow(),
     })
   );
   wrap.appendChild(

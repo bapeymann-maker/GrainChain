@@ -8,13 +8,17 @@
 //   shipments       - outbound hauls (bin -> buyer) started on this device.
 //   tickets         - scale ticket entries (append-only; newest wins). May
 //                      carry a photo Blob until it has uploaded.
+//   affidavits      - signed clean-truck affidavits (the signature image is
+//                      a Blob here until it has uploaded; see add-truck-affidavits.sql).
 //   reference       - cached copy of server data the kiosk needs to
 //                      function offline (fields, bins, workers, ...).
 //
 // Each queue record has synced: false until sync.js confirms it landed.
 
 const DB_NAME = "ufer_kiosk";
-const DB_VERSION = 4; // v4 adds dryer_readings, dryer_runs, and
+const DB_VERSION = 5; // v5 adds the affidavits store (clean-truck affidavits
+// signed on a driver's phone; queued here like tickets, uploaded when online).
+// v4 adds dryer_readings, dryer_runs, and
 // active_dryer_runs — the dryer operator flow. A run only ever becomes a
 // dryer_runs record once it's stopped (start + stop + everything in
 // between, synced together); while it's running, its state lives in
@@ -61,6 +65,9 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains("active_dryer_runs")) {
         db.createObjectStore("active_dryer_runs", { keyPath: "dryerName" });
+      }
+      if (!db.objectStoreNames.contains("affidavits")) {
+        db.createObjectStore("affidavits", { keyPath: "localId", autoIncrement: true });
       }
     };
 
@@ -155,7 +162,10 @@ export async function queueShipment(shipment) {
     ...shipment,
     synced: false,
     departedAt: new Date().toISOString(),
-    clientId: crypto.randomUUID(),
+    // A caller can supply the id up front when something else (a truck
+    // affidavit signed just before the haul is saved) has to point at this
+    // haul before it exists. Otherwise it's made here, as always.
+    clientId: shipment.clientId || crypto.randomUUID(),
   });
 }
 
@@ -204,6 +214,41 @@ export async function markTicketSynced(localId) {
 export async function markTicketPhotoUploaded(localId) {
   // Drop the Blob once it's safely uploaded so it doesn't sit in storage.
   return patchRecord("tickets", localId, { photoUploaded: true, photo: null });
+}
+
+// --- Clean-truck affidavits (append-only; a correction is a new, superseding row) ---
+
+export async function queueAffidavit(aff) {
+  const clientId = aff.clientId || crypto.randomUUID();
+  return addRecord("affidavits", {
+    ...aff,
+    clientId,
+    signedAt: aff.signedAt || new Date().toISOString(),
+    synced: false,
+    // Where the signature image will live in the affidavit-signatures bucket.
+    signaturePath: `${clientId}.png`,
+    signatureUploaded: false,
+  });
+}
+
+export async function getAllAffidavits() {
+  return allRecords("affidavits");
+}
+
+// Pending if the row hasn't synced OR the signature image hasn't uploaded —
+// the two are tried in order (image first) so a row never points at a
+// signature that isn't there.
+export async function getPendingAffidavits() {
+  return (await allRecords("affidavits")).filter((a) => !a.synced || !a.signatureUploaded);
+}
+
+export async function markAffidavitSynced(localId) {
+  return patchRecord("affidavits", localId, { synced: true, syncedAt: new Date().toISOString() });
+}
+
+export async function markAffidavitSignatureUploaded(localId) {
+  // Drop the image once it's safely uploaded; its hash stays on the record.
+  return patchRecord("affidavits", localId, { signatureUploaded: true, signature: null });
 }
 
 // --- In-progress scale ticket draft ---
@@ -333,14 +378,15 @@ export async function clearActiveDryerRun(dryerName) {
 
 // Everything still waiting to reach Supabase — drives the "N queued" badge.
 export async function pendingCount() {
-  const [loads, ships, tickets, readings, runs] = await Promise.all([
+  const [loads, ships, tickets, readings, runs, affidavits] = await Promise.all([
     getPendingLoads(),
     getPendingShipments(),
     getPendingTickets(),
     getPendingDryerReadings(),
     getPendingDryerRuns(),
+    getPendingAffidavits(),
   ]);
-  return loads.length + ships.length + tickets.length + readings.length + runs.length;
+  return loads.length + ships.length + tickets.length + readings.length + runs.length + affidavits.length;
 }
 
 // --- Reference data cache (fields, bins, workers, destinations, ...) ---

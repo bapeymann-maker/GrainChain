@@ -129,6 +129,7 @@
       <button id="hauls-csv-btn" style="display:none;">Download CSV</button>
       <button id="view-dashboard-btn" class="view-btn">Dashboard</button>
       <button id="view-harvest-btn" class="view-btn">Harvest</button>
+      <button id="view-affidavits-btn" class="view-btn">Affidavits</button>
       <button id="view-loads-btn" class="view-btn active-view">Field to Bin</button>
       <button id="view-field-btn" class="view-btn">By Field</button>
       <button id="view-hauls-btn" class="view-btn">Hauls &amp; Tickets</button>
@@ -151,6 +152,7 @@
             <th data-sort="moisture">Moisture</th>
             <th data-sort="test_weight">Test Wt</th>
             <th data-sort="bin">Bin</th>
+            <th title="Clean-truck affidavit, for organic and transitional loads">Affidavit</th>
           </tr>
         </thead>
         <tbody id="rows"></tbody>
@@ -243,6 +245,10 @@
       <div id="harvest-view" style="display:none;">
         <div id="harvest-content"></div>
       </div>
+
+      <div id="affidavits-view" style="display:none;">
+        <div id="affidavits-content"></div>
+      </div>
     </div>
   </div>
 
@@ -274,8 +280,10 @@
     const viewSettlementsBtn = document.getElementById("view-settlements-btn");
     const viewDashboardBtn = document.getElementById("view-dashboard-btn");
     const viewHarvestBtn = document.getElementById("view-harvest-btn");
+    const viewAffidavitsBtn = document.getElementById("view-affidavits-btn");
     const dashboardView = document.getElementById("dashboard-view");
     const harvestView = document.getElementById("harvest-view");
+    const affidavitsView = document.getElementById("affidavits-view");
     const dashContentEl = document.getElementById("dash-content");
     const contractsView = document.getElementById("contracts-view");
     const settlementsView = document.getElementById("settlements-view");
@@ -388,6 +396,9 @@
       loginView.classList.add("hidden");
       logView.classList.add("visible");
       fetchLoads();
+      // Affidavit status feeds a column on this very table, so start loading
+      // it now rather than waiting for a visit to the Affidavits tab.
+      fetchAffidavits().then(() => { if (viewMode === "loads") render(); });
     }
 
     loginBtn.addEventListener("click", async () => {
@@ -413,8 +424,8 @@
     destinationFilterEl.addEventListener("change", render);
     haulsCsvBtnEl.addEventListener("click", downloadHaulsCsv);
 
-    const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn, dashboard: viewDashboardBtn, harvest: viewHarvestBtn };
-    const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView, dashboard: dashboardView, harvest: harvestView };
+    const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn, dashboard: viewDashboardBtn, harvest: viewHarvestBtn, affidavits: viewAffidavitsBtn };
+    const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView, dashboard: dashboardView, harvest: harvestView, affidavits: affidavitsView };
 
     async function ensureContracts() {
       if (!contractsLoaded) { await ensureDestinations(); await ensureHauls(); await fetchContracts(); }
@@ -442,6 +453,12 @@
 
       if (mode === "hauls" && !haulsLoaded) await fetchHauls();
       if (mode === "harvest") await ensureHarvestFields();
+      if (mode === "hauls") await ensureAffidavits();
+      if (mode === "affidavits") {
+        await Promise.all([ensureLoads(), ensureHauls(), ensureAffidavits()]);
+        render();
+        return;
+      }
       if (mode === "contracts") await ensureContracts();
       if (mode === "settlements") await ensureSettlements();
       if (mode === "dashboard") {
@@ -467,6 +484,7 @@
     viewSettlementsBtn.addEventListener("click", () => switchView("settlements"));
     viewDashboardBtn.addEventListener("click", () => switchView("dashboard"));
     viewHarvestBtn.addEventListener("click", () => switchView("harvest"));
+    viewAffidavitsBtn.addEventListener("click", () => switchView("affidavits"));
 
     document.querySelectorAll("th[data-hsort]").forEach((th) => {
       th.addEventListener("click", () => {
@@ -519,6 +537,11 @@
         return;
       }
       allLoads = data.map((l) => ({
+        // raw values for matching a load to its truck affidavit
+        // (the kiosk's "truck" is the trailer, U1–U8)
+        loadId: l.client_id || l.id,
+        trailer_raw: l.truck || null,
+        field_id: l.field_id,
         logged_at: l.logged_at,
         worker: l.workers?.name || l.worker_id,
         field: l.fields?.name || l.field_id,
@@ -563,6 +586,8 @@
         renderSettlements();
       } else if (viewMode === "harvest") {
         renderHarvest();
+      } else if (viewMode === "affidavits") {
+        renderAffidavits();
       }
     }
 
@@ -575,6 +600,7 @@
       });
 
       rowsEl.innerHTML = "";
+      const affMatches = loadAffidavitMatches();
       rows.forEach((r) => {
         const tr = document.createElement("tr");
         const time = r.logged_at ? new Date(r.logged_at).toLocaleString() : "—";
@@ -592,9 +618,11 @@
           <td>${escapeHtml(r.moisture)}</td>
           <td>${escapeHtml(r.test_weight)}</td>
           <td>${escapeHtml(r.bin)}</td>
+          <td>${loadAffidavitCell(r, affMatches)}</td>
         `;
         rowsEl.appendChild(tr);
       });
+      wirePrintButtons(rowsEl);
     }
 
     function renderFieldSummary(rows) {
@@ -719,7 +747,7 @@
           driver: s.workers?.name || s.worker_id,
           origin, originStatus: s.origin_status,
           destination: destLoc ? `${destination} (${destLoc})` : destination,
-          rig: s.truck ? `Truck ${s.truck} · ${s.trailer}` : s.trailer,
+          rig: rigText(s.truck, s.trailer),
           ticketNumber: ticket?.ticket_number || "—",
           driverNet: ticket ? `${ticket.net_lb != null ? ticket.net_lb.toLocaleString() + " lb" : "—"} / ${ticket.net_bushels != null ? ticket.net_bushels.toLocaleString() + " bu" : "—"}` : "—",
           aiNet: read && !read.error ? `${read.net_lb != null ? read.net_lb.toLocaleString() + " lb" : "—"} / ${read.net_bu != null ? read.net_bu.toLocaleString() + " bu" : "—"}` : read?.error ? "Read failed" : "—",
@@ -821,6 +849,11 @@
       const longest = digitRuns.reduce((a, b) => (b.length > a.length ? b : a));
       return longest.replace(/^0+(?=\d)/, "");
     }
+    // Outside drivers' own truck/trailer are stored as the text "External".
+    function truckLabel(t) { return t === "External" ? "External truck" : `Truck ${t}`; }
+    function trailerLabel(t) { return t === "External" ? "External trailer" : t; }
+    function rigText(truck, trailer) { return truck ? `${truckLabel(truck)} · ${trailerLabel(trailer)}` : trailerLabel(trailer); }
+
     // Natural sort — compares the numeric part of a ticket number
     // numerically (so "AH-2" sorts before "AH-10", unlike plain string
     // comparison), while still handling fully numeric or letter-prefixed
@@ -1351,6 +1384,333 @@
         readingSettlements.delete(settlementId);
         await fetchSettlements();
         render();
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // Truck affidavits
+    // ---------------------------------------------------------------------
+    // Signed by drivers on their phones (see add-truck-affidavits.sql). Hauls
+    // link to their affidavit directly. Field-to-bin loads are logged on the
+    // kiosk, a separate device from the phone the driver signed on, so those
+    // are paired up by trailer + field + time instead.
+    const AFFIDAVIT_FARM_NAME = "Ufer Farms Partnership";
+    const AFFIDAVIT_CONDITION_LABEL = { last_used_organic: "Last used for organic", inspected_clean: "Inspected and is clean", inspected_cleaned: "Inspected and cleaned" };
+    const AFFIDAVIT_METHOD_LABEL = { swept: "Swept", blown: "Blown", washed: "Washed" };
+    const AFFIDAVIT_START_KEY = "grainchain_affidavit_start";
+    // A load is paired with an affidavit signed up to this long before it was
+    // logged (sign at the field, load, drive to the bins, dump, log it)...
+    const AFFIDAVIT_MATCH_WINDOW_MS = 12 * 60 * 60 * 1000;
+    // ...or a few minutes AFTER, since a phone's clock and the kiosk's can disagree.
+    const AFFIDAVIT_CLOCK_SKEW_MS = 10 * 60 * 1000;
+    const needsTruckAffidavit = (status) => status === "organic" || status === "transitional";
+
+    let allAffidavits = [];
+    let affidavitsLoaded = false;
+    let affidavitsUnavailable = false; // the SQL hasn't been run yet
+    let affidavitOriginNames = new Map(); // field/bin id -> name
+
+    async function fetchAffidavits() {
+      const [aRes, fRes, bRes] = await Promise.all([
+        supabase.from("truck_affidavits_verified").select("*").order("signed_at", { ascending: false }).limit(3000),
+        supabase.from("fields").select("id,name"),
+        supabase.from("bins").select("id,name"),
+      ]);
+      affidavitsLoaded = true;
+      if (aRes.error) {
+        // Most likely add-truck-affidavits.sql hasn't been run. Say so on the
+        // Affidavits tab; everywhere else just show nothing rather than break.
+        affidavitsUnavailable = true;
+        allAffidavits = [];
+        return;
+      }
+      affidavitsUnavailable = false;
+      allAffidavits = aRes.data || [];
+      affidavitOriginNames = new Map([...(fRes.data || []), ...(bRes.data || [])].map((x) => [x.id, x.name]));
+    }
+    async function ensureAffidavits() {
+      if (!affidavitsLoaded) await fetchAffidavits();
+    }
+
+    // Loads and hauls before this date aren't flagged as missing an
+    // affidavit — otherwise everything from before the feature existed would
+    // show up as a gap. Defaults to the day the first affidavit was signed;
+    // can be set by hand.
+    function affidavitStart() {
+      let stored = null;
+      try { stored = localStorage.getItem(AFFIDAVIT_START_KEY); } catch { /* storage unavailable — fall through to the default */ }
+      if (stored) {
+        const d = new Date(stored + "T00:00:00");
+        if (!isNaN(d)) return d;
+      }
+      if (!allAffidavits.length) return null;
+      const first = allAffidavits.reduce((min, a) => (a.signed_at < min ? a.signed_at : min), allAffidavits[0].signed_at);
+      const d = new Date(first);
+      d.setHours(0, 0, 0, 0);
+      return d;
+    }
+    const affidavitRequiredAt = (iso, start) => !!start && !!iso && new Date(iso) >= start;
+
+    // Pairs each field load that NEEDS an affidavit (organic/transitional,
+    // not a buffer load) with one signed for the same trailer and field, in
+    // time order, one affidavit per load. If a driver signs twice by
+    // mistake the extra one is simply left over.
+    function loadAffidavitMatches() {
+      const byLoad = new Map(); // load -> affidavit | null
+      const affToLoad = new Map(); // affidavit client_id -> load
+      const needing = allLoads.filter((l) => needsTruckAffidavit(l.status) && l.trailer_raw && l.field_id && l.logged_at);
+      const key = (trailer, field) => `${trailer}|${field}`;
+      const affsByKey = new Map();
+      allAffidavits
+        .filter((a) => a.context === "field_load")
+        .forEach((a) => {
+          const k = key(a.trailer, a.field_id);
+          if (!affsByKey.has(k)) affsByKey.set(k, []);
+          affsByKey.get(k).push(a);
+        });
+      affsByKey.forEach((list) => list.sort((a, b) => new Date(a.signed_at) - new Date(b.signed_at)));
+      const used = new Set();
+      [...needing]
+        .sort((a, b) => new Date(a.logged_at) - new Date(b.logged_at))
+        .forEach((l) => {
+          const t = new Date(l.logged_at).getTime();
+          const hit = (affsByKey.get(key(l.trailer_raw, l.field_id)) || []).find((a) => {
+            if (used.has(a.client_id)) return false;
+            const s = new Date(a.signed_at).getTime();
+            return s <= t + AFFIDAVIT_CLOCK_SKEW_MS && t - s <= AFFIDAVIT_MATCH_WINDOW_MS;
+          });
+          if (hit) { used.add(hit.client_id); affToLoad.set(hit.client_id, l); }
+          byLoad.set(l, hit || null);
+        });
+      return { byLoad, affToLoad };
+    }
+
+    const haulAffidavit = (h) => allAffidavits.find((a) => a.context === "haul" && a.shipment_client_id === h.haulId) || null;
+
+    function affidavitOriginLabel(a) {
+      const name = affidavitOriginNames.get(a.field_id || a.bin_id) || a.field_id || a.bin_id || "—";
+      return a.origin_type === "field" ? `${name} (field)` : name;
+    }
+    function affidavitConditionText(a) {
+      const base = AFFIDAVIT_CONDITION_LABEL[a.condition] || a.condition;
+      const methods = (a.cleaning_methods || []).map((m) => AFFIDAVIT_METHOD_LABEL[m] || m);
+      return methods.length ? `${base}: ${methods.join(", ")}` : base;
+    }
+    function affidavitCoversLabel(a, matches) {
+      if (a.context === "haul") {
+        const h = allHauls.find((x) => x.haulId === a.shipment_client_id);
+        if (!h) return "Haul";
+        return `Haul to ${h.destination}${h.ticketNumber && h.ticketNumber !== "—" ? " · ticket #" + h.ticketNumber : ""}`;
+      }
+      const load = matches.affToLoad.get(a.client_id);
+      return load ? `Field load logged ${new Date(load.logged_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "Field load — none logged against it yet";
+    }
+
+    function wirePrintButtons(root) {
+      root.querySelectorAll("[data-print-aff]").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const a = allAffidavits.find((x) => x.client_id === btn.dataset.printAff);
+          if (a) printAffidavit(a, btn);
+        });
+      });
+    }
+
+    // The Field to Bin table's "Affidavit" cell.
+    function loadAffidavitCell(load, matches) {
+      if (affidavitsUnavailable || !needsTruckAffidavit(load.status)) return "—";
+      const a = matches.byLoad.get(load);
+      if (a) return `<span class="badge badge-match">Signed</span> <button class="small-btn" data-print-aff="${escapeHtml(a.client_id)}">View</button>`;
+      return affidavitRequiredAt(load.logged_at, affidavitStart()) ? `<span class="badge badge-review">Missing</span>` : "—";
+    }
+
+    // The row in an expanded haul on the Hauls & Tickets tab.
+    function buildHaulAffidavitRow(h) {
+      if (affidavitsUnavailable || !needsTruckAffidavit(h.originStatus)) return null;
+      const a = haulAffidavit(h);
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:10px;margin-bottom:10px;";
+      row.setAttribute("data-role", "haul-affidavit");
+      const label = document.createElement("span");
+      label.className = "meta";
+      label.textContent = "Truck affidavit:";
+      row.appendChild(label);
+      if (a) {
+        row.insertAdjacentHTML("beforeend", `<span class="badge badge-match">Signed</span><span class="meta">${escapeHtml(affidavitConditionText(a))} · ${escapeHtml(new Date(a.signed_at).toLocaleString())}</span><button class="small-btn" data-print-aff="${escapeHtml(a.client_id)}">View / print</button>`);
+        wirePrintButtons(row);
+      } else if (affidavitRequiredAt(h.departed_at, affidavitStart())) {
+        row.insertAdjacentHTML("beforeend", `<span class="badge badge-review">Missing</span>`);
+      } else {
+        row.insertAdjacentHTML("beforeend", `<span class="meta">none on file (before tracking started)</span>`);
+      }
+      return row;
+    }
+
+    function renderAffidavits() {
+      const root = document.getElementById("affidavits-content");
+      if (affidavitsUnavailable) {
+        root.innerHTML = `<div class="meta">Truck affidavits aren't set up yet — run <b>add-truck-affidavits.sql</b> in the Supabase SQL Editor, then reload.</div>`;
+        return;
+      }
+      const matches = loadAffidavitMatches();
+      const start = affidavitStart();
+      const when = (iso) => new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      const statusBadge = (s) => (s ? `<span class="badge badge-${escapeHtml(s)}">${escapeHtml(s[0].toUpperCase() + s.slice(1))}</span>` : "—");
+
+      const missing = [];
+      matches.byLoad.forEach((a, l) => {
+        if (!a && affidavitRequiredAt(l.logged_at, start)) {
+          missing.push({ kind: "Field load", at: l.logged_at, who: l.worker, rig: l.truck, from: `${l.field} (field)`, status: l.status });
+        }
+      });
+      allHauls.forEach((h) => {
+        if (needsTruckAffidavit(h.originStatus) && !haulAffidavit(h) && affidavitRequiredAt(h.departed_at, start)) {
+          missing.push({ kind: "Haul", at: h.departed_at, who: h.driver, rig: h.rig, from: h.origin, status: h.originStatus });
+        }
+      });
+      missing.sort((x, y) => new Date(y.at) - new Date(x.at));
+
+      const startValue = start ? `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}` : "";
+      let html = `<div style="display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin-bottom:14px;">
+        <span id="affidavit-summary"><b>${allAffidavits.length}</b> signed · <b style="color:${missing.length ? "#E2812B" : "inherit"}">${missing.length}</b> organic/transitional load${missing.length === 1 ? "" : "s"} missing one</span>
+        <label class="meta" style="display:flex;align-items:center;gap:6px;">Check loads from <input id="affidavit-start" type="date" value="${startValue}" /></label>
+      </div>`;
+      if (!start) html += `<div class="meta" style="margin-bottom:12px;">Nothing is flagged as missing yet — flagging starts the day the first affidavit is signed, or pick a start date above.</div>`;
+
+      html += `<h3 style="margin:18px 0 8px;font-size:15px;">Missing an affidavit (${missing.length})</h3>`;
+      html += missing.length === 0
+        ? `<div class="meta">${start ? "None — every organic and transitional load since the start date has one." : "—"}</div>`
+        : `<table><thead><tr><th>When</th><th></th><th>Driver</th><th>Rig</th><th>From</th><th>Status</th></tr></thead><tbody>${missing
+            .map((m) => `<tr data-missing="1"><td>${escapeHtml(when(m.at))}</td><td>${escapeHtml(m.kind)}</td><td>${escapeHtml(m.who)}</td><td>${escapeHtml(m.rig)}</td><td>${escapeHtml(m.from)}</td><td>${statusBadge(m.status)}</td></tr>`)
+            .join("")}</tbody></table>`;
+
+      html += `<h3 style="margin:22px 0 8px;font-size:15px;">Signed affidavits (${allAffidavits.length})</h3>`;
+      html += allAffidavits.length === 0
+        ? `<div class="meta">None yet.</div>`
+        : `<table><thead><tr><th>Signed</th><th>Driver</th><th>Rig</th><th>From</th><th>Status</th><th>Condition</th><th>Covers</th><th>Record</th><th></th></tr></thead><tbody>${allAffidavits
+            .map((a) => `<tr data-affidavit="${escapeHtml(a.client_id)}">
+              <td>${escapeHtml(when(a.signed_at))}</td>
+              <td>${escapeHtml(a.worker_name || a.worker_id)}</td>
+              <td>${escapeHtml(rigText(a.truck, a.trailer))}</td>
+              <td>${escapeHtml(affidavitOriginLabel(a))}</td>
+              <td>${statusBadge(a.origin_status)}</td>
+              <td>${escapeHtml(affidavitConditionText(a))}</td>
+              <td>${escapeHtml(affidavitCoversLabel(a, matches))}</td>
+              <td>${a.hash_ok === false ? `<span class="badge badge-review" title="This record's contents no longer match the fingerprint taken when it was signed">CHANGED</span>` : `<span class="badge badge-match" title="Contents match the fingerprint taken when it was signed">Verified</span>`}</td>
+              <td><button class="small-btn" data-print-aff="${escapeHtml(a.client_id)}">View / print</button></td>
+            </tr>`)
+            .join("")}</tbody></table>`;
+      root.innerHTML = html;
+      wirePrintButtons(root);
+      document.getElementById("affidavit-start").addEventListener("change", (e) => {
+        try {
+          if (e.target.value) localStorage.setItem(AFFIDAVIT_START_KEY, e.target.value);
+          else localStorage.removeItem(AFFIDAVIT_START_KEY);
+        } catch { /* not remembered this time — still applies until the page is reloaded */ }
+        renderAffidavits();
+      });
+    }
+
+    // ---- the printable page ----
+    function buildAffidavitHtml(a, o = {}) {
+      const e = escapeHtml;
+      const fmt = (iso) => new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+      const box = (on) => (on ? "☒" : "☐");
+      const methods = a.cleaning_methods || [];
+      const verdict = (ok, good, bad, unknown) =>
+        ok === true ? `<span class="ok">✓ ${e(good)}</span>` : ok === false ? `<span class="bad">⚠ ${e(bad)}</span>` : `<span class="unknown">${e(unknown)}</span>`;
+      return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Truck affidavit — ${e(a.trailer)} — ${e(fmt(a.signed_at))}</title>
+<style>
+  @page { size: letter; margin: 0.6in; }
+  body { font-family: Georgia, 'Times New Roman', serif; color: #111; max-width: 7.2in; margin: 0 auto; padding: 24px 0; }
+  h1 { font-size: 22px; letter-spacing: 1px; text-transform: uppercase; margin: 0 0 2px; }
+  .sub { color: #444; font-size: 13px; margin-bottom: 18px; border-bottom: 2px solid #111; padding-bottom: 10px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .6px; margin: 20px 0 8px; }
+  table.facts { border-collapse: collapse; width: 100%; font-size: 14px; }
+  table.facts td { padding: 5px 8px; border-bottom: 1px solid #ccc; vertical-align: top; }
+  table.facts td:first-child { width: 32%; color: #444; }
+  ul.checks { list-style: none; padding: 0; margin: 0; font-size: 15px; }
+  ul.checks li { padding: 3px 0; }
+  p.statement { font-size: 13.5px; line-height: 1.5; margin: 0; }
+  .sig { margin-top: 26px; }
+  .sig img { display: block; max-width: 3.4in; max-height: 1.3in; border-bottom: 1px solid #111; }
+  .sig .missing { height: 0.9in; width: 3.4in; border-bottom: 1px solid #111; color: #a00; font-size: 12px; padding-top: 0.5in; }
+  .sig .who { font-size: 13px; margin-top: 4px; }
+  .record { margin-top: 28px; padding-top: 10px; border-top: 1px solid #999; font-family: 'Courier New', monospace; font-size: 10.5px; color: #333; line-height: 1.6; word-break: break-all; }
+  .ok { color: #1a6b1a; } .bad { color: #b00; font-weight: bold; } .unknown { color: #666; }
+</style></head><body>
+<h1>Truck Cleanliness Affidavit</h1>
+<div class="sub">${e(AFFIDAVIT_FARM_NAME)} · transport of organic and transitional grain</div>
+<table class="facts">
+  <tr><td>Driver</td><td>${e(a.worker_name || a.worker_id)}</td></tr>
+  <tr><td>Truck / trailer</td><td>${e([a.truck && (a.truck === "External" ? "External truck" : `Truck ${a.truck}`), a.trailer === "External" ? "External trailer" : `Trailer ${a.trailer}`].filter(Boolean).join(" · "))}</td></tr>
+  <tr><td>Loading from</td><td>${e(o.fromLabel || "—")}</td></tr>
+  <tr><td>Grain status</td><td>${e(a.origin_status[0].toUpperCase() + a.origin_status.slice(1))}${a.crop ? " · " + e(a.crop) : ""}</td></tr>
+  <tr><td>This affidavit covers</td><td>${e(o.coversLabel || "—")}</td></tr>
+  <tr><td>Signed</td><td>${e(fmt(a.signed_at))} <span style="color:#666">(driver's phone clock)</span></td></tr>
+  <tr><td>Received by the system</td><td>${e(a.created_at ? fmt(a.created_at) : "—")}</td></tr>
+</table>
+<h2>Condition of the trailer</h2>
+<ul class="checks">
+  <li>${box(a.condition === "last_used_organic")} Last used for organic</li>
+  <li>${box(a.condition === "inspected_clean")} Inspected and is clean</li>
+  <li>${box(a.condition === "inspected_cleaned")} Inspected and cleaned</li>
+</ul>
+${a.condition === "inspected_cleaned" ? `<h2>Cleaned by</h2><ul class="checks"><li>${box(methods.includes("swept"))} Swept &nbsp;&nbsp; ${box(methods.includes("blown"))} Blown &nbsp;&nbsp; ${box(methods.includes("washed"))} Washed</li></ul>` : ""}
+<h2>Statement</h2>
+<p class="statement">${e(a.statement)}</p>
+<div class="sig">
+  ${o.signatureDataUrl ? `<img src="${e(o.signatureDataUrl)}" alt="Signature">` : `<div class="missing">Signature image could not be loaded</div>`}
+  <div class="who">${e(a.worker_name || a.worker_id)} · ${e(fmt(a.signed_at))}</div>
+</div>
+<div class="record">
+  Record ID ${e(a.client_id)}<br>
+  Fingerprint (SHA-256) ${e(a.record_hash || "—")}<br>
+  ${verdict(a.hash_ok, "Record unchanged since it was signed", "RECORD HAS CHANGED SINCE IT WAS SIGNED — do not rely on this copy", "Record not checked")}<br>
+  Signature image SHA-256 ${e(a.signature_sha256)}<br>
+  ${verdict(o.signatureOk, "Signature image matches the fingerprint taken when it was signed", "SIGNATURE IMAGE DOES NOT MATCH — do not rely on this copy", "Signature image not checked")}
+</div>
+</body></html>`;
+    }
+
+    async function loadAffidavitSignature(a) {
+      const { data, error } = await supabase.storage.from("affidavit-signatures").createSignedUrl(a.signature_path, 120);
+      if (error || !data || !data.signedUrl) return { dataUrl: null, ok: null };
+      const res = await fetch(data.signedUrl);
+      if (!res.ok) return { dataUrl: null, ok: null };
+      const blob = await res.blob();
+      const read = (method) => new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+        r[method](blob);
+      });
+      const digest = await crypto.subtle.digest("SHA-256", await read("readAsArrayBuffer"));
+      const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+      return { dataUrl: await read("readAsDataURL"), ok: hex === a.signature_sha256 };
+    }
+
+    async function printAffidavit(a, btn) {
+      // Opened right away, inside the click, so pop-up blockers allow it;
+      // filled in once the signature has loaded.
+      const w = window.open("", "_blank");
+      if (!w) { alert("Your browser blocked the print window. Allow pop-ups for this page and try again."); return; }
+      w.document.write("<p style='font-family:sans-serif'>Preparing affidavit…</p>");
+      const original = btn ? btn.textContent : "";
+      if (btn) { btn.disabled = true; btn.textContent = "Opening…"; }
+      try {
+        const sig = await loadAffidavitSignature(a);
+        const matches = loadAffidavitMatches();
+        const html = buildAffidavitHtml(a, { fromLabel: affidavitOriginLabel(a), coversLabel: affidavitCoversLabel(a, matches), signatureDataUrl: sig.dataUrl, signatureOk: sig.ok });
+        w.document.open();
+        w.document.write(html);
+        w.document.close();
+        setTimeout(() => { try { w.focus(); w.print(); } catch { /* the owner can still print it by hand */ } }, 400);
+      } catch (err) {
+        w.close();
+        alert("Could not open the affidavit: " + err.message);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = original; }
       }
     }
 
@@ -2001,6 +2361,8 @@
           <span class="legend-chip"><span class="legend-dot" style="background:var(--ai-yellow);"></span>AI read from photo</span>
         </div>
       `;
+      const affRow = buildHaulAffidavitRow(r);
+      if (affRow) wrap.appendChild(affRow);
       const grid = document.createElement("div");
       grid.className = "detail-cols";
       grid.innerHTML = `<div class="dh">Field</div><div class="dh">Driver</div><div class="dh">AI reading</div>`;

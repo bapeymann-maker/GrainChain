@@ -21,6 +21,9 @@ import {
   getPendingTickets,
   markTicketSynced,
   markTicketPhotoUploaded,
+  getPendingAffidavits,
+  markAffidavitSynced,
+  markAffidavitSignatureUploaded,
   getPendingDryerReadings,
   markDryerReadingSynced,
   getPendingDryerRuns,
@@ -31,6 +34,7 @@ import {
 
 const POLL_INTERVAL_MS = 30_000; // retry every 30s in case 'online' misfires
 const PHOTO_BUCKET = "scale-tickets";
+const SIGNATURE_BUCKET = "affidavit-signatures";
 
 const ALL_REFERENCE_TABLES = [
   { key: "fields", endpoint: "fields" },
@@ -40,6 +44,9 @@ const ALL_REFERENCE_TABLES = [
   // Recent hauls + newest ticket, so a haul started on one device can be
   // finished from another — see create-outbound-hauls.sql
   { key: "recent_shipments", endpoint: "recent_shipments", query: "select=*&order=departed_at.desc" },
+  // Per trailer: its newest clean-truck affidavit (to pre-fill the next one)
+  // and the newest thing recorded as hauled in it — see add-truck-affidavits.sql
+  { key: "trailer_context", endpoint: "trailer_context" },
 ];
 // Each page says which of these it needs via initSync({ reference: [...] });
 // the kiosk (index.html) passes nothing and gets the original three.
@@ -136,13 +143,16 @@ async function pushPendingShipments() {
   return { pushed, failed };
 }
 
-async function uploadPhoto(path, blob) {
-  const res = await fetch(`${config.supabaseUrl}/storage/v1/object/${PHOTO_BUCKET}/${path}`, {
+// contentType: say it explicitly when the bucket only accepts one kind —
+// a stored Blob can come back from the browser's database without its type,
+// and the fallback below (JPEG) would be refused by a PNG-only bucket.
+async function uploadPhoto(path, blob, bucket = PHOTO_BUCKET, contentType = null) {
+  const res = await fetch(`${config.supabaseUrl}/storage/v1/object/${bucket}/${path}`, {
     method: "POST",
     headers: {
       apikey: config.supabaseAnonKey,
       Authorization: `Bearer ${config.supabaseAnonKey}`,
-      "Content-Type": blob.type || "image/jpeg",
+      "Content-Type": contentType || blob.type || "image/jpeg",
       "x-upsert": "false",
     },
     body: blob,
@@ -185,6 +195,39 @@ async function pushPendingTickets() {
   return { pushed, failed };
 }
 
+// A signed affidavit is a legal record, so it's pushed in a fixed order:
+// the signature image first, THEN the row that points at it. If the image
+// can't upload (weak signal), the row waits too — better a short delay
+// than a row on the server whose signature doesn't exist. Each step is
+// remembered separately, so a retry never repeats the part that worked.
+async function pushPendingAffidavits() {
+  let pushed = 0;
+  let failed = 0;
+  for (const a of await getPendingAffidavits()) {
+    if (!a.signatureUploaded) {
+      try {
+        await uploadPhoto(a.signaturePath, a.signature, SIGNATURE_BUCKET, "image/png");
+        await markAffidavitSignatureUploaded(a.localId);
+      } catch (err) {
+        console.error("Signature upload failed for affidavit", a.localId, err);
+        failed += 1;
+        continue;
+      }
+    }
+    if (!a.synced) {
+      try {
+        await insertRow("truck_affidavits", toAffidavitRow(a));
+        await markAffidavitSynced(a.localId);
+        pushed += 1;
+      } catch (err) {
+        console.error("Sync failed for affidavit", a.localId, err);
+        failed += 1;
+      }
+    }
+  }
+  return { pushed, failed };
+}
+
 // Readings sync continuously and independently throughout a run — no
 // foreign key to dryer_runs (see add-dryer-batches.sql), so this can
 // land before, after, or without its run ever syncing at all.
@@ -221,6 +264,31 @@ async function pushPendingDryerRuns() {
     }
   }
   return { pushed, failed };
+}
+
+// record_hash is deliberately absent: the database computes it itself, and
+// ignores anything sent for it.
+function toAffidavitRow(a) {
+  return {
+    client_id: a.clientId,
+    signed_at: a.signedAt,
+    worker_id: a.workerId,
+    truck: a.truck ?? null,
+    trailer: a.trailer,
+    context: a.context,
+    shipment_client_id: a.shipmentClientId ?? null,
+    origin_type: a.originType,
+    field_id: a.fieldId ?? null,
+    bin_id: a.binId ?? null,
+    origin_status: a.originStatus,
+    crop: a.crop ?? null,
+    condition: a.condition,
+    cleaning_methods: a.cleaningMethods || [],
+    statement: a.statement,
+    signature_path: a.signaturePath,
+    signature_sha256: a.signatureSha256,
+    supersedes: a.supersedes ?? null,
+  };
 }
 
 // Maps the kiosk's in-app load shape to the Supabase table's columns.
@@ -424,6 +492,7 @@ export async function runSyncCycle() {
       await pushPendingLoads(),
       await pushPendingShipments(),
       await pushPendingTickets(),
+      await pushPendingAffidavits(),
       await pushPendingDryerReadings(),
       await pushPendingDryerRuns(),
     ];

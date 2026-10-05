@@ -28,6 +28,14 @@ export const COLORS = {
 export const HEAD = "font-family:'Bahnschrift','DIN Alternate','Arial Narrow',sans-serif;";
 export const BODY = "font-family:Inter,-apple-system,'Segoe UI',sans-serif;";
 
+// Hauls by outside drivers use their own truck and trailer, which have no
+// number of ours. They're stored as the literal text "External" in the same
+// truck / trailer columns (no schema change) and shown in plain words.
+export const EXTERNAL = "External";
+export const truckLabel = (t) => (t === EXTERNAL ? "External truck" : `Truck ${t}`);
+export const trailerLabel = (t) => (t === EXTERNAL ? "External trailer" : t);
+export const rigText = (truck, trailer) => (truck ? `${truckLabel(truck)} · ${trailerLabel(trailer)}` : trailerLabel(trailer));
+
 const STATUS_LABEL = {
   organic: { fg: COLORS.organic, bg: COLORS.organicDark, label: "Organic" },
   transitional: { fg: COLORS.transitional, bg: COLORS.transitionalDark, label: "Transitional" },

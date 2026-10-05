@@ -10,8 +10,10 @@
 // Kept separate from app.js so the field-delivery flow is untouched.
 // app.js hands us its state and UI helpers via createHaul(ctx).
 
-import { queueShipment, queueTicket, getAllShipments, getAllTickets, saveTicketDraft, getTicketDraft, clearTicketDraft } from "./db.js";
+import { queueShipment, queueTicket, queueAffidavit, getAllShipments, getAllTickets, getAllAffidavits, saveTicketDraft, getTicketDraft, clearTicketDraft } from "./db.js";
 import { syncSoon } from "./sync.js";
+import { createAffidavit, needsAffidavit } from "./affidavit.js";
+import { EXTERNAL, trailerLabel, rigText } from "./ui.js";
 
 const CROPS = ["Corn", "Soybeans", "Oats"];
 const HAUL_WINDOW_MS = 4 * 24 * 60 * 60 * 1000; // matches recent_shipments view
@@ -44,6 +46,12 @@ export function createHaul(ctx) {
   // What the driver has picked so far for a new haul. Persists between
   // hauls so the last trailer/bin/destination come up pre-highlighted.
   const haul = {
+    // "haul" = bin/field -> buyer. "fieldLoad" = just signing a truck
+    // affidavit for a load going field -> bins (the kiosk logs the load itself).
+    mode: "haul",
+    // The id the haul about to be saved WILL have — made up front so the
+    // truck affidavit signed just before it can point at it.
+    pendingClientId: null,
     truck: null,
     trailer: null,
     destCustom: false, // true when the driver typed a destination that isn't in the list
@@ -57,7 +65,7 @@ export function createHaul(ctx) {
     fieldQuery: "",
     destId: null,
     crop: null,
-    estMode: "full", // "full" | "custom"
+    estMode: "full", // "full" | "custom" | "none" ("none" = not known yet; only offered for an outside trailer)
     estUnit: "bu", // "bu" | "lb"
     estValue: "",
     error: "",
@@ -88,14 +96,22 @@ export function createHaul(ctx) {
   };
 
   // This device's own not-yet-(or-just)-synced records.
-  const local = { shipments: [], tickets: [] };
+  const local = { shipments: [], tickets: [], affidavits: [] };
 
   async function refreshLocal(quiet = false) {
-    const [s, t] = await Promise.all([getAllShipments(), getAllTickets()]);
+    const [s, t, a] = await Promise.all([getAllShipments(), getAllTickets(), getAllAffidavits()]);
     local.shipments = s;
     local.tickets = t;
+    local.affidavits = a;
     if (!quiet) rerender();
   }
+
+  // The affidavit signing screen (affidavit.js). It pre-fills from this
+  // phone's own affidavits and hauls plus the server's per-trailer summary.
+  const affidavit = createAffidavit({
+    state, setState, h, bigButton, linkButton, badge, COLORS, HEAD, BODY,
+    getInputs: () => ({ localAffidavits: local.affidavits, context: state.trailerContext || [], localShipments: local.shipments }),
+  });
 
   // ---------- small UI helpers ----------
   const col = () => h("div", { style: "display:flex;flex-direction:column;gap:14px;" });
@@ -133,7 +149,7 @@ export function createHaul(ctx) {
     }
     return destLabel(x.destination_id);
   };
-  const rigLabel = (x) => (x.truck ? `Truck ${x.truck} · ${x.trailer}` : x.trailer);
+  const rigLabel = (x) => rigText(x.truck, x.trailer);
   // Places drivers typed in the last few days, so the next driver can tap
   // one instead of re-typing it (keeps the spelling consistent).
   function recentCustomDestinations() {
@@ -213,28 +229,31 @@ export function createHaul(ctx) {
   function trailerScreen() {
     const wrap = col();
     add(wrap, title("Truck and trailer"), hint("Pick your truck number and the trailer you're pulling."));
-    const grid = (values, current, pick) => {
+    // The last button on each row is "External": an outside driver's own
+    // truck / trailer, which has no number of ours.
+    const grid = (values, current, pick, externalText) => {
       const g = h("div", { style: "display:grid;grid-template-columns:repeat(4,1fr);gap:8px;" });
-      values.forEach((v) =>
+      [...values, EXTERNAL].forEach((v) =>
         g.appendChild(
           h(
             "button",
             {
-              style: `${choiceStyle(current === v)}text-align:center;font-size:16px;font-weight:700;padding:14px 8px;`,
+              "data-external": v === EXTERNAL ? "true" : null,
+              style: `${choiceStyle(current === v)}text-align:center;font-size:16px;font-weight:700;padding:14px 8px;${v === EXTERNAL ? "grid-column:1 / -1;font-weight:600;font-size:15px;" : ""}`,
               onclick: () => {
                 pick(v);
                 haul.error = "";
                 rerender();
               },
             },
-            v
+            v === EXTERNAL ? externalText : v
           )
         )
       );
       return g;
     };
-    add(wrap, label("Truck #"), grid(TRUCK_NUMBERS, haul.truck, (v) => (haul.truck = v)));
-    add(wrap, label("Trailer"), grid(TRUCKS, haul.trailer, (v) => (haul.trailer = v)));
+    add(wrap, label("Truck #"), grid(TRUCK_NUMBERS, haul.truck, (v) => (haul.truck = v), "External truck"));
+    add(wrap, label("Trailer"), grid(TRUCKS, haul.trailer, (v) => (haul.trailer = v), "External trailer"));
     add(wrap, errorLine(haul.error));
     add(
       wrap,
@@ -247,7 +266,7 @@ export function createHaul(ctx) {
             return;
           }
           haul.error = "";
-          setState({ screen: "haulOrigin" });
+          setState({ screen: haul.mode === "fieldLoad" ? "haulField" : "haulOrigin" });
         },
       })
     );
@@ -288,10 +307,12 @@ export function createHaul(ctx) {
   // ---------- 2b. Field (when hauling straight from a field) ----------
   function fieldScreen() {
     const wrap = col();
-    add(wrap, title("Which field?"), hint("Straight from the field to the buyer."));
+    const fieldLoad = haul.mode === "fieldLoad";
+    const backFromField = () => setState({ screen: fieldLoad ? "haulTrailer" : "haulOrigin" });
+    add(wrap, title("Which field?"), hint(fieldLoad ? "The field you're loading from." : "Straight from the field to the buyer."));
     if (state.fields.length === 0) {
       add(wrap, emptyNote("No fields synced yet. Make sure this device has connected to the internet at least once since setup."));
-      add(wrap, linkButton("← Back", () => setState({ screen: "haulOrigin" })));
+      add(wrap, linkButton("← Back", backFromField));
       return wrap;
     }
     add(
@@ -354,6 +375,7 @@ export function createHaul(ctx) {
             "data-name": f.name.toLowerCase(),
             "data-selected": selected ? "true" : null,
             onclick: () => {
+              if (fieldLoad) return beginFieldLoadAffidavit(f);
               haul.fieldId = f.id;
               haul.crop = normCrop(f.crop) || haul.crop;
               setState({ screen: "haulDest" });
@@ -374,7 +396,7 @@ export function createHaul(ctx) {
       );
     });
     applyQuery();
-    add(wrap, list, linkButton("← Back", () => setState({ screen: "haulOrigin" })));
+    add(wrap, list, linkButton("← Back", backFromField));
     return wrap;
   }
 
@@ -600,8 +622,8 @@ export function createHaul(ctx) {
 
     const rows = [
       ["Driver", state.worker.name],
-      ["Truck", `#${haul.truck}`],
-      ["Trailer", haul.trailer],
+      ["Truck", haul.truck === EXTERNAL ? "External truck" : `#${haul.truck}`],
+      ["Trailer", trailerLabel(haul.trailer)],
       isField
         ? ["From field", `${field.name}${field.acres ? " · " + fmtNum(field.acres, 1) + " ac" : ""}`]
         : ["From bin", `${bin.name} (${bin.site})`],
@@ -654,20 +676,39 @@ export function createHaul(ctx) {
     );
 
     add(wrap, label("Estimated load — you'll replace this with the scale ticket numbers later"));
+    // "Full trailer" means the trailer's known capacity. An outside driver's
+    // trailer has none on record, so there it's "not known yet" instead.
+    const external = haul.trailer === EXTERNAL;
+    if (external && haul.estMode === "full") haul.estMode = "none";
+    if (!external && haul.estMode === "none") haul.estMode = "full";
     add(
       wrap,
-      h(
-        "button",
-        {
-          style: choiceStyle(haul.estMode === "full"),
-          onclick: () => {
-            haul.estMode = "full";
-            haul.error = "";
-            rerender();
-          },
-        },
-        `Full trailer — about ${fmtNum(TRUCK_BUSHELS[haul.trailer] || 0)} bu`
-      )
+      external
+        ? h(
+            "button",
+            {
+              "data-est": "none",
+              style: choiceStyle(haul.estMode === "none"),
+              onclick: () => {
+                haul.estMode = "none";
+                haul.error = "";
+                rerender();
+              },
+            },
+            "Not known yet — the scale ticket will have it"
+          )
+        : h(
+            "button",
+            {
+              style: choiceStyle(haul.estMode === "full"),
+              onclick: () => {
+                haul.estMode = "full";
+                haul.error = "";
+                rerender();
+              },
+            },
+            `Full trailer — about ${fmtNum(TRUCK_BUSHELS[haul.trailer] || 0)} bu`
+          )
     );
     add(
       wrap,
@@ -721,6 +762,9 @@ export function createHaul(ctx) {
     }
 
     add(wrap, errorLine(haul.error));
+    if (needsAffidavit(originStatus)) {
+      add(wrap, h("div", { "data-role": "affidavit-heads-up", style: `font-size:13px;color:${COLORS.gold};` }, `${originStatus === "organic" ? "Organic" : "Transitional"} load — you'll sign a truck affidavit next.`));
+    }
     add(wrap, bigButton("Start haul — heading out", { tone: "gold", onClick: startHaul }));
     add(wrap, linkButton("← Back", () => setState({ screen: "haulDest" })));
     return wrap;
@@ -737,7 +781,10 @@ export function createHaul(ctx) {
       : { destination_id: haul.destId };
     let estBushels = null;
     let estWeightLb = null;
-    if (haul.estMode === "full") {
+    if (haul.trailer === EXTERNAL && haul.estMode === "full") haul.estMode = "none";
+    if (haul.estMode === "none") {
+      // No estimate: fine — the scale ticket supplies the real numbers.
+    } else if (haul.estMode === "full") {
       estBushels = TRUCK_BUSHELS[haul.trailer] || null;
     } else {
       const v = num(haul.estValue);
@@ -749,35 +796,72 @@ export function createHaul(ctx) {
       if (haul.estUnit === "bu") estBushels = v;
       else estWeightLb = v;
     }
+    const originStatus = (isField ? field.status : bin.status) || null;
+    const payload = {
+      workerId: state.worker.id,
+      truck: haul.truck,
+      trailer: haul.trailer,
+      originType: isField ? "field" : "bin",
+      binId: bin ? bin.id : null,
+      fieldId: field ? field.id : null,
+      crop: haul.crop,
+      binStatus: bin ? bin.status || null : null,
+      originStatus,
+      // Snapshotted at departure, same reasoning as originStatus above —
+      // a bin's split toggle changing later (new season, different
+      // arrangement) can't retroactively change what already left.
+      // Field-direct hauls have no bin, so no split applies.
+      splitPartnerId: bin ? bin.split_partner_id || null : null,
+      splitPct: bin ? bin.split_pct || null : null,
+      destinationId: haul.destCustom ? null : haul.destId,
+      destinationName: haul.destCustom ? haul.destName : null,
+      destinationLocation: haul.destCustom ? haul.destLocation || null : null,
+      estBushels,
+      estWeightLb,
+    };
+
+    // Organic and transitional loads need a signed truck affidavit before
+    // they leave. Nothing is saved until it's signed — the haul and its
+    // affidavit are written together.
+    if (needsAffidavit(originStatus)) {
+      const clientId = haul.pendingClientId || (haul.pendingClientId = crypto.randomUUID());
+      affidavit.begin({
+        base: {
+          context: "haul",
+          shipmentClientId: clientId,
+          trailer: haul.trailer,
+          truck: haul.truck,
+          originType: isField ? "field" : "bin",
+          fieldId: field ? field.id : null,
+          binId: bin ? bin.id : null,
+          originStatus,
+          crop: haul.crop || null,
+        },
+        summary: { from: originName },
+        onSigned: (record) => commitHaul({ ...payload, clientId }, destination, originName, record),
+        onBack: () => setState({ screen: "haulConfirm" }),
+      });
+      setState({ screen: "haulAffidavit" });
+      return;
+    }
+    await commitHaul(payload, destination, originName, null);
+  }
+
+  async function commitHaul(payload, destination, originName, affidavitRecord) {
+    if (haul.saving) return;
     haul.saving = true;
     try {
-      await queueShipment({
-        workerId: state.worker.id,
-        truck: haul.truck,
-        trailer: haul.trailer,
-        originType: isField ? "field" : "bin",
-        binId: bin ? bin.id : null,
-        fieldId: field ? field.id : null,
-        crop: haul.crop,
-        binStatus: bin ? bin.status || null : null,
-        originStatus: (isField ? field.status : bin.status) || null,
-        // Snapshotted at departure, same reasoning as originStatus above —
-        // a bin's split toggle changing later (new season, different
-        // arrangement) can't retroactively change what already left.
-        // Field-direct hauls have no bin, so no split applies.
-        splitPartnerId: bin ? bin.split_partner_id || null : null,
-        splitPct: bin ? bin.split_pct || null : null,
-        destinationId: haul.destCustom ? null : haul.destId,
-        destinationName: haul.destCustom ? haul.destName : null,
-        destinationLocation: haul.destCustom ? haul.destLocation || null : null,
-        estBushels,
-        estWeightLb,
-      });
+      // The affidavit goes first: if the haul then fails to save, a signed
+      // affidavit with no haul is harmless, whereas a haul with no
+      // affidavit is exactly what this is meant to prevent.
+      if (affidavitRecord) await queueAffidavit({ ...affidavitRecord, shipmentClientId: payload.clientId });
+      await queueShipment(payload);
+      haul.pendingClientId = null;
       await refreshLocal(true);
       haul.done = {
         title: "Haul started",
-        line: `Truck ${haul.truck} · ${haul.trailer} · ${originName} → ${destText(destination)}`,
-        note: "When you get your scale ticket, open “Scale tickets” on the home screen to enter the numbers and take a photo of it.",
+        line: `${rigText(haul.truck, haul.trailer)} · ${originName} → ${destText(destination)}`,
+        note: (affidavitRecord ? "Truck affidavit signed. " : "") + "When you get your scale ticket, open “Scale tickets” on the home screen to enter the numbers and take a photo of it.",
       };
       haul.estMode = "full";
       haul.estValue = "";
@@ -786,11 +870,66 @@ export function createHaul(ctx) {
       syncSoon();
     } catch (err) {
       console.error("Could not save haul", err);
+      // On the affidavit screen the error shows there, so hand it back.
+      if (affidavitRecord) throw err;
       haul.error = "Couldn't save the haul on this device. Try again.";
       rerender();
     } finally {
       haul.saving = false;
     }
+  }
+
+  // ---------- Field-load affidavit (no haul: the kiosk logs the load) ----------
+  function beginFieldLoadAffidavit(field) {
+    if (!needsAffidavit(field.status)) {
+      haul.done = {
+        title: "No affidavit needed",
+        line: `${field.name} is ${field.status || "not certified"} — nothing was saved.`,
+        note: "Truck affidavits are only needed for organic and transitional loads.",
+      };
+      setState({ screen: "haulDone" });
+      return;
+    }
+    affidavit.begin({
+      base: {
+        context: "field_load",
+        trailer: haul.trailer,
+        truck: haul.truck,
+        originType: "field",
+        fieldId: field.id,
+        binId: null,
+        originStatus: field.status,
+        crop: normCrop(field.crop),
+      },
+      summary: { from: `${field.name} (field)` },
+      onSigned: async (record) => {
+        await queueAffidavit(record);
+        await refreshLocal(true);
+        haul.done = {
+          title: "Affidavit signed",
+          line: `${rigText(haul.truck, haul.trailer)} · ${field.name} (${field.status})`,
+          note: "Go ahead and load. Log the load on the kiosk as usual — this affidavit is matched to it by trailer, field and time.",
+        };
+        setState({ screen: "haulDone" });
+        syncSoon();
+      },
+      onBack: () => setState({ screen: "haulField" }),
+    });
+    setState({ screen: "haulAffidavit" });
+  }
+
+  // Entry points from the home screen. Each resets what the other left behind.
+  function beginHaulFlow() {
+    haul.mode = "haul";
+    haul.pendingClientId = null;
+    haul.error = "";
+    setState({ screen: "haulTrailer" });
+  }
+  function beginFieldLoadFlow() {
+    haul.mode = "fieldLoad";
+    haul.pendingClientId = null;
+    haul.error = "";
+    setState({ screen: "haulTrailer" });
   }
 
   // ---------- Confirmation ----------
@@ -1206,7 +1345,10 @@ export function createHaul(ctx) {
     refreshLocal,
     needsTicketCount,
     restoreDraftIfAny,
+    beginHaulFlow,
+    beginFieldLoadFlow,
     screens: {
+      haulAffidavit: affidavit.screen,
       haulTrailer: trailerScreen,
       haulOrigin: originScreen,
       haulField: fieldScreen,

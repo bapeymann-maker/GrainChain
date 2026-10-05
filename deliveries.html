@@ -79,7 +79,7 @@
       initSync({
         supabaseUrl: SUPABASE_URL,
         supabaseAnonKey: SUPABASE_ANON_KEY,
-        reference: ["bins", "fields", "workers", "destinations", "recent_shipments"],
+        reference: ["bins", "fields", "workers", "destinations", "recent_shipments", "trailer_context"],
         onStatusChange: renderStatus,
       });
       pendingCount().then((n) => {
