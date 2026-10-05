@@ -1394,10 +1394,10 @@
 
     // A true two-slice pie: a circle whose stroke is as wide as its own
     // radius, so the stroke fills all the way to the center.
-    function harvestPieSvg(fraction) {
+    function harvestPieSvg(fraction, size = 140) {
       const f = Math.max(0, Math.min(1, fraction));
       const r = 35, C = 2 * Math.PI * r;
-      return `<svg viewBox="0 0 140 140" width="140" height="140" role="img" aria-label="${Math.round(f * 100)}% harvested">
+      return `<svg viewBox="0 0 140 140" width="${size}" height="${size}" role="img" aria-label="${Math.round(f * 100)}% harvested">
         <circle cx="70" cy="70" r="70" fill="var(--border)"/>
         <circle cx="70" cy="70" r="${r}" fill="none" stroke="var(--gold)" stroke-width="70" stroke-dasharray="${(f * C).toFixed(2)} ${C.toFixed(2)}" transform="rotate(-90 70 70)"/>
       </svg>`;
@@ -1416,7 +1416,22 @@
       const root = document.getElementById("harvest-pies");
       const { byGroup, included } = harvestGroups();
       const all = harvestStats(included.flatMap((g) => byGroup.get(g)));
-      let html = `<div class="meta" style="margin-bottom:12px;">Showing ${included.length} operation${included.length === 1 ? "" : "s"} · ${fmtAcres(all.doneAcres)} of ${fmtAcres(all.totalAcres)} acres harvested (${Math.round(all.fraction * 100)}%) · ${all.done} of ${all.total} fields</div>`;
+      // One pie for everything currently ticked, added together — the
+      // answer to "what percent of these operations is done?"
+      let html = `<div id="harvest-combined" class="item-card" style="display:flex;align-items:center;gap:28px;flex-wrap:wrap;padding:18px;margin-bottom:16px;">`;
+      if (included.length === 0) {
+        html += `<div class="meta">Tick at least one operation above to see a combined percentage.</div>`;
+      } else {
+        html += `${harvestPieSvg(all.fraction, 190)}
+          <div>
+            <div class="meta">${included.length === 1 ? "Selected operation" : `${included.length} selected operations, combined`}</div>
+            <div style="font-size:46px;font-weight:700;color:var(--gold);line-height:1.1;">${Math.round(all.fraction * 100)}%</div>
+            <div style="font-size:15px;margin-top:2px;">${fmtAcres(all.doneAcres)} of ${fmtAcres(all.totalAcres)} acres harvested</div>
+            <div class="meta">${all.done} of ${all.total} fields · ${fmtAcres(all.totalAcres - all.doneAcres)} acres to go</div>
+            <div class="meta" style="margin-top:6px;">${included.map(escapeHtml).join(" · ")}</div>
+          </div>`;
+      }
+      html += `</div>`;
       html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:16px;margin-bottom:24px;">`;
       included.forEach((g) => {
         const st = harvestStats(byGroup.get(g));
@@ -1514,6 +1529,10 @@
       });
     }
 
+    function persistHarvestExcluded() {
+      try { localStorage.setItem(HARVEST_EXCLUDED_KEY, JSON.stringify([...harvestExcluded])); } catch { /* not persisted this time — still applies for this visit */ }
+    }
+
     function renderHarvest() {
       const root = document.getElementById("harvest-content");
       const { byGroup, visible } = harvestGroups();
@@ -1527,12 +1546,19 @@
         cb.checked = !harvestExcluded.has(g);
         cb.addEventListener("change", () => {
           if (cb.checked) harvestExcluded.delete(g); else harvestExcluded.add(g);
-          try { localStorage.setItem(HARVEST_EXCLUDED_KEY, JSON.stringify([...harvestExcluded])); } catch { /* not persisted this time — still applies for this visit */ }
+          persistHarvestExcluded();
           renderHarvest();
         });
         label.appendChild(cb);
         label.appendChild(document.createTextNode(`${g} (${byGroup.get(g).length})`));
         toggles.appendChild(label);
+      });
+      [["Select all", () => visible.forEach((g) => harvestExcluded.delete(g))], ["Clear", () => visible.forEach((g) => harvestExcluded.add(g))]].forEach(([text, apply]) => {
+        const btn = document.createElement("button");
+        btn.className = "small-btn";
+        btn.textContent = text;
+        btn.addEventListener("click", () => { apply(); persistHarvestExcluded(); renderHarvest(); });
+        toggles.appendChild(btn);
       });
       renderHarvestPies();
       renderHarvestLists();
