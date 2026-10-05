@@ -45,6 +45,11 @@ const ALL_REFERENCE_TABLES = [
 // the kiosk (index.html) passes nothing and gets the original three.
 const DEFAULT_REFERENCE_KEYS = ["fields", "bins", "workers"];
 
+// Operations tracked in the owner's Harvest tab that don't deliver grain
+// through the kiosk or Deliveries — their fields live in the same table,
+// but must never show up as a place a driver can pick up a load from.
+const HIDDEN_FROM_PICKERS_OPERATIONS = ["LB Pork"];
+
 let config = null;
 let syncing = false;
 let pollTimer = null;
@@ -391,7 +396,14 @@ async function pullReferenceData() {
   const wanted = config.reference || DEFAULT_REFERENCE_KEYS;
   for (const { key, endpoint, query = "select=*" } of ALL_REFERENCE_TABLES.filter((t) => wanted.includes(t.key))) {
     try {
-      const rows = await supabaseRequest(`/rest/v1/${endpoint}?${query}`);
+      let rows = await supabaseRequest(`/rest/v1/${endpoint}?${query}`);
+      // Filtered here rather than in the query itself so it works whether
+      // or not the operation column exists yet (no deploy-order trap), and
+      // applies to everything that reads cached fields — kiosk and
+      // Deliveries both.
+      if (key === "fields" && Array.isArray(rows)) {
+        rows = rows.filter((f) => !HIDDEN_FROM_PICKERS_OPERATIONS.includes(f.operation));
+      }
       await cacheReference(key, rows);
       anyUpdated = true;
     } catch (err) {
