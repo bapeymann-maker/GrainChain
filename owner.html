@@ -128,6 +128,7 @@
       </select>
       <button id="hauls-csv-btn" style="display:none;">Download CSV</button>
       <button id="view-dashboard-btn" class="view-btn">Dashboard</button>
+      <button id="view-harvest-btn" class="view-btn">Harvest</button>
       <button id="view-loads-btn" class="view-btn active-view">Field to Bin</button>
       <button id="view-field-btn" class="view-btn">By Field</button>
       <button id="view-hauls-btn" class="view-btn">Hauls &amp; Tickets</button>
@@ -238,6 +239,10 @@
         </div>
         <div id="dash-content"></div>
       </div>
+
+      <div id="harvest-view" style="display:none;">
+        <div id="harvest-content"></div>
+      </div>
     </div>
   </div>
 
@@ -268,7 +273,9 @@
     const viewContractsBtn = document.getElementById("view-contracts-btn");
     const viewSettlementsBtn = document.getElementById("view-settlements-btn");
     const viewDashboardBtn = document.getElementById("view-dashboard-btn");
+    const viewHarvestBtn = document.getElementById("view-harvest-btn");
     const dashboardView = document.getElementById("dashboard-view");
+    const harvestView = document.getElementById("harvest-view");
     const dashContentEl = document.getElementById("dash-content");
     const contractsView = document.getElementById("contracts-view");
     const settlementsView = document.getElementById("settlements-view");
@@ -406,8 +413,8 @@
     destinationFilterEl.addEventListener("change", render);
     haulsCsvBtnEl.addEventListener("click", downloadHaulsCsv);
 
-    const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn, dashboard: viewDashboardBtn };
-    const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView, dashboard: dashboardView };
+    const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn, dashboard: viewDashboardBtn, harvest: viewHarvestBtn };
+    const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView, dashboard: dashboardView, harvest: harvestView };
 
     async function ensureContracts() {
       if (!contractsLoaded) { await ensureDestinations(); await ensureHauls(); await fetchContracts(); }
@@ -434,6 +441,7 @@
       haulsCsvBtnEl.style.display = mode === "hauls" ? "" : "none";
 
       if (mode === "hauls" && !haulsLoaded) await fetchHauls();
+      if (mode === "harvest") await ensureHarvestFields();
       if (mode === "contracts") await ensureContracts();
       if (mode === "settlements") await ensureSettlements();
       if (mode === "dashboard") {
@@ -458,6 +466,7 @@
     viewContractsBtn.addEventListener("click", () => switchView("contracts"));
     viewSettlementsBtn.addEventListener("click", () => switchView("settlements"));
     viewDashboardBtn.addEventListener("click", () => switchView("dashboard"));
+    viewHarvestBtn.addEventListener("click", () => switchView("harvest"));
 
     document.querySelectorAll("th[data-hsort]").forEach((th) => {
       th.addEventListener("click", () => {
@@ -552,6 +561,8 @@
         renderContracts();
       } else if (viewMode === "settlements") {
         renderSettlements();
+      } else if (viewMode === "harvest") {
+        renderHarvest();
       }
     }
 
@@ -1341,6 +1352,190 @@
         await fetchSettlements();
         render();
       }
+    }
+
+    // ---------------------------------------------------------------------
+    // Harvest tracker
+    // ---------------------------------------------------------------------
+    const OPERATIONS = ["Ufer Farms Partnership", "Organic Southern Operations", "Organic Northern Operations", "LB Pork"];
+    const UNASSIGNED = "Unassigned";
+    const HARVEST_EXCLUDED_KEY = "grainchain_harvest_excluded";
+    let harvestFields = [];
+    let harvestFieldsLoaded = false;
+    // Operations switched OFF in the tracker (e.g. LB Pork) — kept across
+    // visits so it doesn't have to be re-excluded every time.
+    const harvestExcluded = new Set();
+    // <details> sections the owner has open — remembered across re-renders
+    // so ticking off fields in a long list doesn't snap it shut.
+    const harvestOpen = new Set([UNASSIGNED]);
+    try { JSON.parse(localStorage.getItem(HARVEST_EXCLUDED_KEY) || "[]").forEach((g) => harvestExcluded.add(g)); } catch { /* storage unavailable — just start with everything shown */ }
+
+    async function fetchHarvestFields() {
+      statusLine.textContent = "Loading…";
+      const { data, error } = await supabase.from("fields").select("id,name,acres,crop,status,operation,harvested,harvested_at").order("name", { ascending: true });
+      if (error) { statusLine.textContent = "Error loading fields: " + error.message; return; }
+      harvestFields = data || [];
+      harvestFieldsLoaded = true;
+      statusLine.textContent = `${harvestFields.length} fields`;
+    }
+    async function ensureHarvestFields() {
+      if (!harvestFieldsLoaded) await fetchHarvestFields();
+    }
+
+    function harvestGroupOf(f) {
+      return OPERATIONS.includes(f.operation) ? f.operation : UNASSIGNED;
+    }
+    function harvestStats(fields) {
+      const totalAcres = fields.reduce((s, f) => s + (Number(f.acres) || 0), 0);
+      const doneAcres = fields.filter((f) => f.harvested).reduce((s, f) => s + (Number(f.acres) || 0), 0);
+      return { totalAcres, doneAcres, total: fields.length, done: fields.filter((f) => f.harvested).length, fraction: totalAcres > 0 ? doneAcres / totalAcres : 0 };
+    }
+    const fmtAcres = (n) => n.toLocaleString(undefined, { maximumFractionDigits: 1 });
+
+    // A true two-slice pie: a circle whose stroke is as wide as its own
+    // radius, so the stroke fills all the way to the center.
+    function harvestPieSvg(fraction) {
+      const f = Math.max(0, Math.min(1, fraction));
+      const r = 35, C = 2 * Math.PI * r;
+      return `<svg viewBox="0 0 140 140" width="140" height="140" role="img" aria-label="${Math.round(f * 100)}% harvested">
+        <circle cx="70" cy="70" r="70" fill="var(--border)"/>
+        <circle cx="70" cy="70" r="${r}" fill="none" stroke="var(--gold)" stroke-width="70" stroke-dasharray="${(f * C).toFixed(2)} ${C.toFixed(2)}" transform="rotate(-90 70 70)"/>
+      </svg>`;
+    }
+
+    function harvestGroups() {
+      const groups = [...OPERATIONS, UNASSIGNED];
+      const byGroup = new Map(groups.map((g) => [g, []]));
+      harvestFields.forEach((f) => byGroup.get(harvestGroupOf(f)).push(f));
+      // Unassigned only shows up while something's actually in it.
+      const visible = groups.filter((g) => g !== UNASSIGNED || byGroup.get(g).length > 0);
+      return { byGroup, visible, included: visible.filter((g) => !harvestExcluded.has(g)) };
+    }
+
+    function renderHarvestPies() {
+      const root = document.getElementById("harvest-pies");
+      const { byGroup, included } = harvestGroups();
+      const all = harvestStats(included.flatMap((g) => byGroup.get(g)));
+      let html = `<div class="meta" style="margin-bottom:12px;">Showing ${included.length} operation${included.length === 1 ? "" : "s"} · ${fmtAcres(all.doneAcres)} of ${fmtAcres(all.totalAcres)} acres harvested (${Math.round(all.fraction * 100)}%) · ${all.done} of ${all.total} fields</div>`;
+      html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:16px;margin-bottom:24px;">`;
+      included.forEach((g) => {
+        const st = harvestStats(byGroup.get(g));
+        html += `<div class="item-card" style="text-align:center;padding:14px;">
+          <div style="font-weight:700;margin-bottom:10px;">${escapeHtml(g)}</div>
+          ${st.total === 0
+            ? `<div class="meta" style="padding:50px 0;">No fields assigned yet.</div>`
+            : `${harvestPieSvg(st.fraction)}
+               <div style="font-size:22px;font-weight:700;color:var(--gold);margin-top:8px;">${Math.round(st.fraction * 100)}%</div>
+               <div class="meta">${fmtAcres(st.doneAcres)} of ${fmtAcres(st.totalAcres)} acres harvested</div>
+               <div class="meta">${st.done} of ${st.total} fields · ${fmtAcres(st.totalAcres - st.doneAcres)} acres to go</div>`}
+        </div>`;
+      });
+      html += `</div>`;
+      root.innerHTML = html;
+    }
+
+    async function updateHarvestField(f, patch) {
+      // .select() so a permission problem (RLS quietly matching zero rows)
+      // shows up as an error here instead of looking like it saved.
+      const { data, error } = await supabase.from("fields").update(patch).eq("id", f.id).select("id");
+      if (error || !data || data.length === 0) throw new Error(error ? error.message : "Nothing was updated — check that the harvest-tracker SQL has been run");
+      Object.assign(f, patch);
+    }
+
+    function renderHarvestLists() {
+      const root = document.getElementById("harvest-lists");
+      root.innerHTML = "";
+      const { byGroup, included } = harvestGroups();
+      included.forEach((g) => {
+        const fields = [...byGroup.get(g)].sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { numeric: true }));
+        if (fields.length === 0) return;
+        const details = document.createElement("details");
+        details.style.marginBottom = "10px";
+        details.open = harvestOpen.has(g);
+        details.addEventListener("toggle", () => { if (details.open) harvestOpen.add(g); else harvestOpen.delete(g); });
+        const st = harvestStats(fields);
+        const summary = document.createElement("summary");
+        summary.style.cssText = "cursor:pointer;font-weight:600;padding:8px 0;";
+        summary.textContent = `${g} — ${st.done} of ${st.total} fields harvested`;
+        details.appendChild(summary);
+
+        fields.forEach((f) => {
+          const row = document.createElement("div");
+          row.className = "ticket-pick-row";
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = !!f.harvested;
+          cb.title = "Harvested";
+          const name = document.createElement("span");
+          name.style.flex = "1";
+          const paint = () => { name.style.cssText = `flex:1;${f.harvested ? "color:var(--gold);font-weight:600;" : ""}`; };
+          name.textContent = f.name;
+          paint();
+          cb.addEventListener("change", async () => {
+            const want = cb.checked;
+            try {
+              await updateHarvestField(f, { harvested: want, harvested_at: want ? new Date().toISOString() : null });
+              paint();
+              renderHarvestPies();
+              summary.textContent = `${g} — ${harvestStats(fields).done} of ${fields.length} fields harvested`;
+            } catch (err) {
+              alert("Could not update " + f.name + ": " + err.message);
+              cb.checked = !want;
+            }
+          });
+          const acres = document.createElement("span");
+          acres.className = "meta";
+          acres.style.minWidth = "70px";
+          acres.style.textAlign = "right";
+          acres.textContent = f.acres != null ? `${fmtAcres(Number(f.acres))} ac` : "— ac";
+          const badge = document.createElement("span");
+          badge.className = `badge badge-${f.status || "none"}`;
+          badge.textContent = f.status || "—";
+          const sel = document.createElement("select");
+          sel.title = "Operation";
+          sel.innerHTML = `<option value="">Unassigned</option>` + OPERATIONS.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
+          sel.value = OPERATIONS.includes(f.operation) ? f.operation : "";
+          sel.addEventListener("change", async () => {
+            const before = OPERATIONS.includes(f.operation) ? f.operation : "";
+            try {
+              await updateHarvestField(f, { operation: sel.value || null });
+              // The field just moved to a different group — rebuild both
+              // the pies and the lists so it lands in the right place.
+              renderHarvest();
+            } catch (err) {
+              alert("Could not change the operation for " + f.name + ": " + err.message);
+              sel.value = before;
+            }
+          });
+          [cb, name, acres, badge, sel].forEach((el) => row.appendChild(el));
+          details.appendChild(row);
+        });
+        root.appendChild(details);
+      });
+    }
+
+    function renderHarvest() {
+      const root = document.getElementById("harvest-content");
+      const { byGroup, visible } = harvestGroups();
+      root.innerHTML = `<div id="harvest-toggles" style="display:flex;flex-wrap:wrap;gap:8px 18px;margin-bottom:16px;"></div><div id="harvest-pies"></div><div id="harvest-lists"></div>`;
+      const toggles = document.getElementById("harvest-toggles");
+      visible.forEach((g) => {
+        const label = document.createElement("label");
+        label.style.cssText = "display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = !harvestExcluded.has(g);
+        cb.addEventListener("change", () => {
+          if (cb.checked) harvestExcluded.delete(g); else harvestExcluded.add(g);
+          try { localStorage.setItem(HARVEST_EXCLUDED_KEY, JSON.stringify([...harvestExcluded])); } catch { /* not persisted this time — still applies for this visit */ }
+          renderHarvest();
+        });
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(`${g} (${byGroup.get(g).length})`));
+        toggles.appendChild(label);
+      });
+      renderHarvestPies();
+      renderHarvestLists();
     }
 
     // ---------------------------------------------------------------------
