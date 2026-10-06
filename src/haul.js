@@ -1315,46 +1315,65 @@ export function createHaul(ctx) {
     // picked differs (capture="environment" forces the camera to open;
     // the second input has no capture attribute, so the OS shows its
     // normal file/photo picker instead).
-    const cameraInput = h("input", {
-      type: "file",
-      accept: "image/*",
-      capture: "environment",
-      style: "display:none;",
-      onchange: (e) => {
-        const f = e.target.files && e.target.files[0];
-        if (f) choosePhoto(f);
-      },
-    });
-    const libraryInput = h("input", {
-      type: "file",
-      accept: "image/*",
-      style: "display:none;",
-      onchange: (e) => {
-        const f = e.target.files && e.target.files[0];
-        if (f) choosePhoto(f);
-      },
-    });
-    add(wrap, cameraInput, libraryInput);
+    // The two ways to attach a photo. Each is a real file input laid invisibly
+    // OVER its button, so a tap goes straight to the phone's own picker — no
+    // script has to open it. That matters on iPhone: Safari only lets a page
+    // open a file picker from inside the tap itself, and silently ignores one
+    // opened after any wait (this used to save the draft first, then call
+    // input.click(), which is exactly the case it ignores). Android and desktop
+    // are lenient about it, so it only ever failed on iPhones.
+    //
+    // The in-progress ticket is still saved before the camera takes over, in
+    // case the phone reclaims this page's memory while it's open — but started
+    // the moment a finger touches down (a split second before the picker opens)
+    // and not waited on, so it can never hold the picker up.
+    const photoPicker = (button, { label, capture }) => {
+      const wrapPicker = h("div", { style: "position:relative;" }, [button]);
+      if (ticket.photoBusy) return wrapPicker; // nothing to tap while a photo is being processed
+      const input = h("input", {
+        type: "file",
+        accept: "image/*",
+        capture: capture ? "environment" : null,
+        "aria-label": label,
+        // Not display:none — a hidden input can't be tapped. Transparent, and exactly over the button.
+        style: "position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer;z-index:2;border:0;padding:0;margin:0;",
+        onchange: (e) => {
+          const f = e.target.files && e.target.files[0];
+          if (f) choosePhoto(f);
+        },
+      });
+      const saveFirst = () => { saveDraftNow(); }; // started, not awaited
+      input.addEventListener("pointerdown", saveFirst);
+      input.addEventListener("touchstart", saveFirst, { passive: true });
+      input.addEventListener("click", saveFirst);
+      wrapPicker.appendChild(input);
+      return wrapPicker;
+    };
+
     add(wrap, label("Photo of the ticket *"));
     add(
       wrap,
-      bigButton(
-        ticket.photoBusy ? "Processing photo…" : ticket.photoUrl ? "Retake photo" : ticket.hadPhoto ? "Replace photo" : "Take photo of ticket",
-        {
-          tone: ticket.photoUrl || ticket.hadPhoto ? "default" : "gold",
-          disabled: ticket.photoBusy,
-          sub: ticket.photoUrl ? "Photo attached — saves with the ticket" : ticket.hadPhoto ? "Already on file — tap to replace it" : "Required",
-          onClick: async () => { await saveDraftNow(); cameraInput.click(); },
-        }
+      photoPicker(
+        bigButton(
+          ticket.photoBusy ? "Processing photo…" : ticket.photoUrl ? "Retake photo" : ticket.hadPhoto ? "Replace photo" : "Take photo of ticket",
+          {
+            tone: ticket.photoUrl || ticket.hadPhoto ? "default" : "gold",
+            disabled: ticket.photoBusy,
+            sub: ticket.photoUrl ? "Photo attached — saves with the ticket" : ticket.hadPhoto ? "Already on file — tap to replace it" : "Required",
+          }
+        ),
+        { label: "Take photo of ticket", capture: true }
       )
     );
     add(
       wrap,
-      bigButton("Choose from library", {
-        disabled: ticket.photoBusy,
-        sub: "Pick an existing photo instead of the camera",
-        onClick: async () => { await saveDraftNow(); libraryInput.click(); },
-      })
+      photoPicker(
+        bigButton("Choose from library", {
+          disabled: ticket.photoBusy,
+          sub: "Pick an existing photo instead of the camera",
+        }),
+        { label: "Choose from library", capture: false }
+      )
     );
     if (ticket.photoUrl) {
       add(

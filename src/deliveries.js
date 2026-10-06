@@ -8,7 +8,7 @@
 
 import { getReference } from "./db.js";
 import { createHaul } from "./haul.js";
-import { COLORS, HEAD, BODY, h, badge, bigButton, linkButton } from "./ui.js";
+import { APP_VERSION, COLORS, HEAD, BODY, h, badge, bigButton, linkButton } from "./ui.js";
 
 const TRUCKS = ["U1", "U2", "U3", "U4", "U5", "U6", "U7", "U8"];
 // Bushels assumed for a full trailer — all 8 confirmed at 1000 bu.
@@ -246,6 +246,7 @@ function render() {
   const screens = { login: loginScreen, home: homeScreen, ...haul.screens };
   body.appendChild((screens[state.screen] || loginScreen)());
   frame.appendChild(body);
+  frame.appendChild(h("div", { "data-role": "app-version", style: `text-align:center;font-size:11px;color:${COLORS.textMuted};padding:0 0 16px;` }, `GrainChain Deliveries · v${APP_VERSION}`));
   root.appendChild(frame);
 
   // On arrival at a new screen: start at the top, except the bin and field

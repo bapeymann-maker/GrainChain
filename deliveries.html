@@ -38,6 +38,7 @@
     import { pendingCount } from "/src/db.js";
     import { mountApp } from "/src/deliveries.js";
     import { SUPABASE_URL, SUPABASE_ANON_KEY, configProblem } from "/src/config.js";
+    import { watchForUpdates, showUpdateBanner } from "/src/updates.js";
 
     const statusEl = document.getElementById("sync-status");
 
@@ -88,6 +89,9 @@
     }
 
     mountApp(document.getElementById("app"));
+
+    // Offer a reload when a newer copy of the app has been installed behind this page.
+    watchForUpdates({ show: () => showUpdateBanner() });
 
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", () => {

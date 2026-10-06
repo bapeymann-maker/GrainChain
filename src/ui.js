@@ -28,6 +28,12 @@ export const COLORS = {
 export const HEAD = "font-family:'Bahnschrift','DIN Alternate','Arial Narrow',sans-serif;";
 export const BODY = "font-family:Inter,-apple-system,'Segoe UI',sans-serif;";
 
+// The version of the app code, shown at the bottom of the Deliveries screen so
+// anyone can see what a phone is actually running (a Home Screen app on iPhone
+// can hold on to an old copy). Keep it equal to the number in sw.js's
+// CACHE_NAME — bump both together; the test suite checks they match.
+export const APP_VERSION = "32";
+
 // Hauls by outside drivers use their own truck and trailer, which have no
 // number of ours. They're stored as the literal text "External" in the same
 // truck / trailer columns (no schema change) and shown in plain words.

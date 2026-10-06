@@ -4,7 +4,7 @@
 // by db.js/sync.js via IndexedDB — this service worker is only responsible
 // for making sure the app itself always loads.
 
-const CACHE_NAME = "kiosk-shell-v30";
+const CACHE_NAME = "kiosk-shell-v32";
 const SHELL_FILES = [
   "/index.html",
   "/manifest.json",
@@ -13,6 +13,7 @@ const SHELL_FILES = [
   "/src/app.js",
   "/src/haul.js",
   "/src/affidavit.js", // imported by haul.js — without it Deliveries won't load offline
+  "/src/updates.js", // imported by deliveries.html
   // Standalone Deliveries page (drivers' phones)
   "/deliveries.html",
   "/manifest-deliveries.json",
