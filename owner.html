@@ -127,9 +127,11 @@
         <option value="">All destinations</option>
       </select>
       <button id="hauls-csv-btn" style="display:none;">Download CSV</button>
+      <label id="hauls-diff-wrap" style="display:none;align-items:center;gap:6px;font-size:13px;cursor:pointer;" title="Only the tickets where the driver's bushels and the AI's reading aren't the same — the ones that make the two totals disagree"><input type="checkbox" id="hauls-diff-only" /> Differences only</label>
       <button id="view-dashboard-btn" class="view-btn">Dashboard</button>
       <button id="view-harvest-btn" class="view-btn">Harvest</button>
       <button id="view-affidavits-btn" class="view-btn">Affidavits</button>
+      <button id="view-rigs-btn" class="view-btn">Rigs</button>
       <button id="view-loads-btn" class="view-btn active-view">Field to Bin</button>
       <button id="view-field-btn" class="view-btn">By Field</button>
       <button id="view-hauls-btn" class="view-btn">Hauls &amp; Tickets</button>
@@ -249,6 +251,10 @@
       <div id="affidavits-view" style="display:none;">
         <div id="affidavits-content"></div>
       </div>
+
+      <div id="rigs-view" style="display:none;">
+        <div id="rigs-content"></div>
+      </div>
     </div>
   </div>
 
@@ -281,9 +287,11 @@
     const viewDashboardBtn = document.getElementById("view-dashboard-btn");
     const viewHarvestBtn = document.getElementById("view-harvest-btn");
     const viewAffidavitsBtn = document.getElementById("view-affidavits-btn");
+    const viewRigsBtn = document.getElementById("view-rigs-btn");
     const dashboardView = document.getElementById("dashboard-view");
     const harvestView = document.getElementById("harvest-view");
     const affidavitsView = document.getElementById("affidavits-view");
+    const rigsView = document.getElementById("rigs-view");
     const dashContentEl = document.getElementById("dash-content");
     const contractsView = document.getElementById("contracts-view");
     const settlementsView = document.getElementById("settlements-view");
@@ -293,6 +301,8 @@
     const statusFilterEl = document.getElementById("status-filter");
     const destinationFilterEl = document.getElementById("destination-filter");
     const haulsCsvBtnEl = document.getElementById("hauls-csv-btn");
+    const haulsDiffWrapEl = document.getElementById("hauls-diff-wrap");
+    const haulsDiffOnlyEl = document.getElementById("hauls-diff-only");
     const refreshBtn = document.getElementById("refresh-btn");
 
     let allLoads = [];
@@ -423,15 +433,17 @@
     statusFilterEl.addEventListener("change", render);
     destinationFilterEl.addEventListener("change", render);
     haulsCsvBtnEl.addEventListener("click", downloadHaulsCsv);
+    haulsDiffOnlyEl.addEventListener("change", render);
 
-    const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn, dashboard: viewDashboardBtn, harvest: viewHarvestBtn, affidavits: viewAffidavitsBtn };
-    const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView, dashboard: dashboardView, harvest: harvestView, affidavits: affidavitsView };
+    const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn, dashboard: viewDashboardBtn, harvest: viewHarvestBtn, affidavits: viewAffidavitsBtn, rigs: viewRigsBtn };
+    const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView, dashboard: dashboardView, harvest: harvestView, affidavits: affidavitsView, rigs: rigsView };
 
     async function ensureContracts() {
       if (!contractsLoaded) { await ensureDestinations(); await ensureHauls(); await fetchContracts(); }
     }
     async function ensureSettlements() {
-      if (!settlementsLoaded) { await ensureDestinations(); await ensureHauls(); await ensurePartners(); await fetchSettlements(); }
+      // contracts too: a settlement has to be able to show how its loads were split across them
+      if (!settlementsLoaded) { await ensureDestinations(); await ensureHauls(); await ensurePartners(); await ensureContracts(); await fetchSettlements(); }
     }
     async function ensureLoads() {
       if (allLoads.length === 0) await fetchLoads();
@@ -450,9 +462,11 @@
       // and By Field are about bins/fields, not where a load was sold to.
       destinationFilterEl.style.display = mode === "hauls" ? "" : "none";
       haulsCsvBtnEl.style.display = mode === "hauls" ? "" : "none";
+      haulsDiffWrapEl.style.display = mode === "hauls" ? "flex" : "none";
 
       if (mode === "hauls" && !haulsLoaded) await fetchHauls();
       if (mode === "harvest") await ensureHarvestFields();
+      if (mode === "rigs") await ensureRigs();
       if (mode === "hauls") await ensureAffidavits();
       if (mode === "affidavits") {
         await Promise.all([ensureLoads(), ensureHauls(), ensureAffidavits()]);
@@ -485,6 +499,7 @@
     viewDashboardBtn.addEventListener("click", () => switchView("dashboard"));
     viewHarvestBtn.addEventListener("click", () => switchView("harvest"));
     viewAffidavitsBtn.addEventListener("click", () => switchView("affidavits"));
+    viewRigsBtn.addEventListener("click", () => switchView("rigs"));
 
     document.querySelectorAll("th[data-hsort]").forEach((th) => {
       th.addEventListener("click", () => {
@@ -588,6 +603,8 @@
         renderHarvest();
       } else if (viewMode === "affidavits") {
         renderAffidavits();
+      } else if (viewMode === "rigs") {
+        renderRigs();
       }
     }
 
@@ -750,6 +767,10 @@
           origin, originStatus: s.origin_status,
           destination: destLoc ? `${destination} (${destLoc})` : destination,
           rig: rigText(s.truck, s.trailer),
+          // as recorded when the haul left (so a plate changed later doesn't rewrite it)
+          truckPlate: s.truck_plate || null,
+          trailerPlate: s.trailer_plate || null,
+          carrierName: s.carrier_name || null,
           ticketNumber: ticket?.ticket_number || "—",
           driverNet: ticket ? `${ticket.net_lb != null ? ticket.net_lb.toLocaleString() + " lb" : "—"} / ${ticket.net_bushels != null ? ticket.net_bushels.toLocaleString() + " bu" : "—"}` : "—",
           aiNet: read && !read.error ? `${read.net_lb != null ? read.net_lb.toLocaleString() + " lb" : "—"} / ${read.net_bu != null ? read.net_bu.toLocaleString() + " bu" : "—"}` : read?.error ? "Read failed" : "—",
@@ -855,6 +876,17 @@
     function truckLabel(t) { return t === "External" ? "External truck" : `Truck ${t}`; }
     function trailerLabel(t) { return t === "External" ? "External trailer" : t; }
     function rigText(truck, trailer) { return truck ? `${truckLabel(truck)} · ${trailerLabel(trailer)}` : trailerLabel(trailer); }
+    // License plates are typed by hand, so tidied the same way the phones do it.
+    function normalizePlate(raw) {
+      const v = String(raw ?? "").trim().replace(/\s+/g, " ").toUpperCase();
+      if (v === "") return { ok: true, value: null };
+      if (!/^[A-Z0-9][A-Z0-9 \-]{0,19}$/.test(v)) return { ok: false, value: null, error: "Letters, numbers, spaces and dashes only, up to 20." };
+      return { ok: true, value: v };
+    }
+    // "Truck AB 1234 · Trailer TR 7788 · Schmidt Trucking", or "" when there's nothing to say.
+    function plateLine(truckPlate, trailerPlate, carrierName) {
+      return [truckPlate && `Truck ${truckPlate}`, trailerPlate && `Trailer ${trailerPlate}`, carrierName].filter(Boolean).join(" · ");
+    }
 
     // Natural sort — compares the numeric part of a ticket number
     // numerically (so "AH-2" sorts before "AH-10", unlike plain string
@@ -903,6 +935,107 @@
         0
       );
       return Math.max(0, total - allocated);
+    }
+
+    // ---- How a load was split across contracts ----
+    // Every slice of a haul's bushels that has been put against a contract —
+    // oldest contract first — and whatever's left over that isn't on one yet.
+    // A load is "split" when it sits on more than one contract, or when one
+    // contract took only PART of it. Used by both the Contracts and the
+    // Settlements tabs, so they always say the same thing.
+    function contractShortLabel(c) {
+      const sale = c.sale_type === "non_gmo" ? "Non-GMO" : c.sale_type ? c.sale_type.charAt(0).toUpperCase() + c.sale_type.slice(1) : "";
+      return [c.contract_number ? `#${c.contract_number}` : null, c.crop, sale, c.delivery_period].filter(Boolean).join(" · ") || "Contract";
+    }
+    function haulSplit(h) {
+      const total = (h._ticket && h._ticket.net_bushels) || 0;
+      const parts = [];
+      allContracts.forEach((c) => c.assignments.filter((a) => a.shipmentClientId === h.haulId).forEach((a) => parts.push({ contract: c, bushels: a.bushels })));
+      parts.sort((x, y) => String(x.contract.contract_date || "").localeCompare(String(y.contract.contract_date || "")) || contractShortLabel(x.contract).localeCompare(contractShortLabel(y.contract), undefined, { numeric: true }));
+      const allocated = parts.reduce((s, p) => s + p.bushels, 0);
+      const remaining = Math.max(0, Math.round((total - allocated) * 100) / 100);
+      return { parts, total, allocated, remaining, isSplit: parts.length >= 2 || (parts.length === 1 && remaining > 0.001) };
+    }
+    const fmtBuExact = (n) => `${Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 })} bu`;
+    const fmtUsdExact = (n) => `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    // " · est. $2,700.00 at $4.50/bu" — only when the contract has a price
+    const estAtContractPrice = (contract, bushels) =>
+      contract.cash_price != null ? ` · est. ${fmtUsdExact(bushels * contract.cash_price)} at $${Number(contract.cash_price).toFixed(2)}/bu` : "";
+
+    // The block shown under a load that's split: each contract, with its bushels.
+    function buildSplitBlock(h, { currentContractId = null } = {}) {
+      const s = haulSplit(h);
+      const box = document.createElement("div");
+      box.setAttribute("data-role", "split-block");
+      box.style.cssText = "margin:-4px 0 8px;padding:8px 10px;border-left:2px solid var(--gold);font-size:12px;";
+      const title = document.createElement("div");
+      title.className = "meta";
+      title.style.marginBottom = "4px";
+      title.textContent = s.parts.length >= 2
+        ? `Split across ${s.parts.length} contracts — ${fmtBuExact(s.total)} ticket`
+        : `Only part of this load is on a contract — ${fmtBuExact(s.total)} ticket`;
+      box.appendChild(title);
+      s.parts.forEach((p) => {
+        const line = document.createElement("div");
+        line.setAttribute("data-role", "split-line");
+        line.setAttribute("data-contract-id", p.contract.id);
+        line.textContent = `${contractShortLabel(p.contract)} — ${fmtBuExact(p.bushels)}${estAtContractPrice(p.contract, p.bushels)}${p.contract.id === currentContractId ? "  ← this contract" : ""}`;
+        if (p.contract.id === currentContractId) line.style.fontWeight = "600";
+        box.appendChild(line);
+      });
+      if (s.remaining > 0.001) {
+        const rest = document.createElement("div");
+        rest.setAttribute("data-role", "split-remaining");
+        rest.style.color = "#E2812B";
+        rest.textContent = `Not yet on a contract — ${fmtBuExact(s.remaining)}`;
+        box.appendChild(rest);
+      }
+      return box;
+    }
+    const splitLoadCount = (assignments) => assignments.filter((a) => { const hh = allHauls.find((x) => x.haulId === a.shipmentClientId); return hh && haulSplit(hh).isSplit; }).length;
+
+    // On a settlement: where all of its loads' bushels went, contract by contract.
+    function buildSettlementContractBreakdown(s) {
+      const byContract = new Map();
+      let notOnContract = 0, any = false;
+      s.assignments.forEach((a) => {
+        const hh = allHauls.find((x) => x.haulId === a.shipmentClientId);
+        if (!hh) return;
+        const sp = haulSplit(hh);
+        sp.parts.forEach((p) => {
+          any = true;
+          const prev = byContract.get(p.contract.id) || { contract: p.contract, bushels: 0 };
+          prev.bushels += p.bushels;
+          byContract.set(p.contract.id, prev);
+        });
+        notOnContract += sp.remaining;
+      });
+      if (!any) return null; // none of its loads is on a contract yet — nothing to break down
+      const box = document.createElement("div");
+      box.setAttribute("data-role", "settlement-by-contract");
+      box.style.cssText = "margin:0 0 14px;padding:8px 10px;border-left:2px solid var(--gold);font-size:12px;";
+      const title = document.createElement("div");
+      title.className = "meta";
+      title.style.marginBottom = "4px";
+      title.textContent = "Where this settlement's bushels went, by contract";
+      box.appendChild(title);
+      [...byContract.values()]
+        .sort((x, y) => String(x.contract.contract_date || "").localeCompare(String(y.contract.contract_date || "")))
+        .forEach(({ contract, bushels }) => {
+          const line = document.createElement("div");
+          line.setAttribute("data-role", "by-contract-line");
+          line.setAttribute("data-contract-id", contract.id);
+          line.textContent = `${contractShortLabel(contract)} — ${fmtBuExact(bushels)}${estAtContractPrice(contract, bushels)}`;
+          box.appendChild(line);
+        });
+      if (notOnContract > 0.001) {
+        const rest = document.createElement("div");
+        rest.setAttribute("data-role", "by-contract-unassigned");
+        rest.style.color = "#E2812B";
+        rest.textContent = `Not on a contract — ${fmtBuExact(notOnContract)}`;
+        box.appendChild(rest);
+      }
+      return box;
     }
 
     async function assignToContract(haulId, contractId, bushels) {
@@ -961,6 +1094,7 @@
         const pct = c.bushels > 0 ? Math.min(100, Math.round((c.delivered_bushels / c.bushels) * 100)) : 0;
         const expanded = expandedContracts.has(c.id);
         const saleLabel = c.sale_type === "non_gmo" ? "Non-GMO" : c.sale_type.charAt(0).toUpperCase() + c.sale_type.slice(1);
+        const splitCount = splitLoadCount(c.assignments);
 
         const card = document.createElement("div");
         card.className = "item-card";
@@ -971,7 +1105,7 @@
             <div style="font-weight:600;">${expanded ? "▾" : "▸"} ${escapeHtml(c.crop)} · ${escapeHtml(saleLabel)}${c.contract_number ? ` <span class="meta">#${escapeHtml(c.contract_number)}</span>` : ""}</div>
             <div class="meta">${escapeHtml(destName(c.destination_id))}${c.delivery_period ? " · " + escapeHtml(c.delivery_period) : ""}${c.cash_price != null ? " · $" + c.cash_price + "/bu" : ""}</div>
             <div class="progress-track"><div class="progress-fill" style="width:${pct}%;"></div></div>
-            <div class="meta">${Number(c.delivered_bushels).toLocaleString()} / ${Number(c.bushels).toLocaleString()} bu (${pct}%) — ${c.ticket_count} load${c.ticket_count === 1 ? "" : "s"}</div>
+            <div class="meta">${Number(c.delivered_bushels).toLocaleString()} / ${Number(c.bushels).toLocaleString()} bu (${pct}%) — ${c.ticket_count} load${c.ticket_count === 1 ? "" : "s"}${splitCount ? ` · ${splitCount} split` : ""}</div>
           </div>
         `;
         head.addEventListener("click", () => {
@@ -1011,7 +1145,16 @@
               const label = fullBu != null && Math.abs(fullBu - a.bushels) > 0.001
                 ? `${haulSummary(h)} — ${a.bushels.toLocaleString()} bu of this ${fullBu.toLocaleString()} bu ticket`
                 : haulSummary(h);
-              detail.appendChild(pickRow(label, "Remove", () => unassignFromContract(a.id)));
+              const row = pickRow(label, "Remove", () => unassignFromContract(a.id));
+              // a split load also says where the rest of it went
+              if (h && haulSplit(h).isSplit) {
+                const wrapRow = document.createElement("div");
+                wrapRow.appendChild(row);
+                wrapRow.appendChild(buildSplitBlock(h, { currentContractId: c.id }));
+                detail.appendChild(wrapRow);
+              } else {
+                detail.appendChild(row);
+              }
             });
           }
 
@@ -1026,7 +1169,18 @@
             none.textContent = "None right now.";
             detail.appendChild(none);
           } else {
-            eligible.forEach((h) => detail.appendChild(buildAssignRow(h, c, haulRemainingBushels(h))));
+            eligible.forEach((h) => {
+              const assignRow = buildAssignRow(h, c, haulRemainingBushels(h));
+              // a load that's already partly on another contract says so, so its remainder is easy to place
+              if (haulSplit(h).parts.length > 0) {
+                const wrapRow = document.createElement("div");
+                wrapRow.appendChild(assignRow);
+                wrapRow.appendChild(buildSplitBlock(h, { currentContractId: c.id }));
+                detail.appendChild(wrapRow);
+              } else {
+                detail.appendChild(assignRow);
+              }
+            });
           }
           card.appendChild(detail);
         }
@@ -1129,6 +1283,7 @@
           return sum + (bu || 0);
         }, 0);
 
+        const splitCount = splitLoadCount(s.assignments);
         const card = document.createElement("div");
         card.className = "item-card";
         const head = document.createElement("div");
@@ -1137,7 +1292,7 @@
         info.style.flex = "1";
         info.innerHTML = `
           <div style="font-weight:600;">${expanded ? "▾" : "▸"} ${escapeHtml(destName(s.destination_id))} <span class="badge ${s.paid ? "badge-paid" : "badge-unpaid"}">${s.paid ? "Paid" : "Unpaid"}</span></div>
-          <div class="meta">${s.settlement_date ? new Date(s.settlement_date).toLocaleDateString() : "No date"}${s.total_amount != null ? " · $" + Number(s.total_amount).toLocaleString() : ""} · ${s.assignments.length} load${s.assignments.length === 1 ? "" : "s"}${totalBushels ? " · " + totalBushels.toLocaleString() + " bu" : ""}</div>
+          <div class="meta">${s.settlement_date ? new Date(s.settlement_date).toLocaleDateString() : "No date"}${s.total_amount != null ? " · $" + Number(s.total_amount).toLocaleString() : ""} · ${s.assignments.length} load${s.assignments.length === 1 ? "" : "s"}${totalBushels ? " · " + totalBushels.toLocaleString() + " bu" : ""}${splitCount ? ` · ${splitCount} split across contracts` : ""}</div>
         `;
         head.appendChild(info);
         if (s.document_path) {
@@ -1192,6 +1347,9 @@
           }
           detail.appendChild(paidWrap);
 
+          const byContract = buildSettlementContractBreakdown(s);
+          if (byContract) detail.appendChild(byContract);
+
           const assignedLabel = document.createElement("div");
           assignedLabel.style.cssText = "font-size:12px;color:var(--text-muted);margin-bottom:6px;";
           assignedLabel.textContent = `Loads on this settlement (${s.assignments.length})`;
@@ -1242,6 +1400,8 @@
                 }
                 container.appendChild(shareWrap);
               }
+              // a load split across contracts says how, and by how much
+              if (h && haulSplit(h).isSplit) container.appendChild(buildSplitBlock(h));
               detail.appendChild(container);
             });
           }
@@ -1300,7 +1460,17 @@
             none.textContent = "None right now.";
             detail.appendChild(none);
           } else {
-            eligible.forEach((h) => detail.appendChild(pickRow(haulSummary(h), "Assign", () => assignToSettlement(h.haulId, s.id), "gold", isOnSettlement(h))));
+            eligible.forEach((h) => {
+              const pick = pickRow(haulSummary(h), "Assign", () => assignToSettlement(h.haulId, s.id), "gold", isOnSettlement(h));
+              if (haulSplit(h).isSplit) {
+                const wrapRow = document.createElement("div");
+                wrapRow.appendChild(pick);
+                wrapRow.appendChild(buildSplitBlock(h));
+                detail.appendChild(wrapRow);
+              } else {
+                detail.appendChild(pick);
+              }
+            });
           }
           card.appendChild(detail);
         }
@@ -1601,7 +1771,7 @@
             .map((a) => `<tr data-affidavit="${escapeHtml(a.client_id)}">
               <td>${escapeHtml(when(a.signed_at))}</td>
               <td>${escapeHtml(a.worker_name || a.worker_id)}</td>
-              <td>${escapeHtml(rigText(a.truck, a.trailer))}</td>
+              <td>${escapeHtml(rigText(a.truck, a.trailer))}${plateLine(a.truck_plate, a.trailer_plate, a.carrier_name) ? `<div class="meta rig-plates" style="font-size:11px;">${escapeHtml(plateLine(a.truck_plate, a.trailer_plate, a.carrier_name))}</div>` : ""}</td>
               <td>${escapeHtml(affidavitOriginLabel(a))}</td>
               <td>${statusBadge(a.origin_status)}</td>
               <td>${escapeHtml(affidavitConditionText(a))}</td>
@@ -1670,7 +1840,8 @@
   <tr><td>Shipper</td><td>${e(AFFIDAVIT_FARM_NAME)}</td></tr>
   <tr><td>${a.origin_type === "bin" ? "Bin number" : "Field"}</td><td>${e(o.originName || "—")}</td></tr>
   <tr><td>Destination</td><td>${blank(o.destination)}</td></tr>
-  <tr><td>Trucking / shipping firm</td><td>${own ? e(AFFIDAVIT_FARM_NAME) : blank("")}</td></tr>
+  <tr><td>License plates</td><td>${a.truck_plate || a.trailer_plate ? e([a.truck_plate && `Truck ${a.truck_plate}`, a.trailer_plate && `Trailer ${a.trailer_plate}`].filter(Boolean).join(" · ")) : blank("")}</td></tr>
+  <tr><td>Trucking / shipping firm</td><td>${a.carrier_name ? e(a.carrier_name) : own ? e(AFFIDAVIT_FARM_NAME) : blank("")}</td></tr>
   <tr><td>Date loaded</td><td>${blank(o.loadedAt ? fmt(o.loadedAt) : "")}</td></tr>
   <tr><td>Date delivered</td><td>${blank(o.deliveredOn)}</td></tr>
   <tr><td>Crop / product</td><td>${e([a.crop, a.origin_status[0].toUpperCase() + a.origin_status.slice(1)].filter(Boolean).join(" · "))}</td></tr>
@@ -1752,6 +1923,85 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       } finally {
         if (btn) { btn.disabled = false; btn.textContent = original; }
       }
+    }
+
+    // ---------------------------------------------------------------------
+    // Rigs: license plates for our trucks and trailers
+    // ---------------------------------------------------------------------
+    // Phones pull this list, and a haul records the plate as it is the day it
+    // leaves — so editing one here never changes hauls already made.
+    let rigList = [];
+    let rigsLoaded = false;
+    let rigsUnavailable = false; // add-rig-plates.sql hasn't been run yet
+
+    async function fetchRigs() {
+      const { data, error } = await supabase.from("rig_plates").select("*");
+      rigsLoaded = true;
+      if (error) { rigsUnavailable = true; rigList = []; return; }
+      rigsUnavailable = false;
+      // trucks first, then trailers; each in number order (U2 before U10)
+      rigList = (data || []).slice().sort((a, b) => (a.kind === b.kind ? a.label.localeCompare(b.label, undefined, { numeric: true }) : a.kind === "truck" ? -1 : 1));
+    }
+    async function ensureRigs() {
+      if (!rigsLoaded) await fetchRigs();
+    }
+
+    async function saveRigPlate(rig, rawValue) {
+      const tidy = normalizePlate(rawValue);
+      if (!tidy.ok) throw new Error(tidy.error);
+      // .select() so a permission problem (zero rows quietly updated) is an error, not a fake "Saved"
+      const { data, error } = await supabase.from("rig_plates").update({ plate: tidy.value }).eq("id", rig.id).select("id");
+      if (error || !data || data.length === 0) throw new Error(error ? error.message : "Nothing was saved — check that add-rig-plates.sql has been run");
+      rig.plate = tidy.value;
+      return tidy.value;
+    }
+
+    function renderRigs() {
+      const root = document.getElementById("rigs-content");
+      if (rigsUnavailable) {
+        root.innerHTML = `<div class="meta">License plates aren't set up yet — run <b>add-rig-plates.sql</b> in the Supabase SQL Editor, then reload.</div>`;
+        return;
+      }
+      const have = rigList.filter((r) => r.plate).length;
+      const section = (kind, heading) => {
+        const rows = rigList.filter((r) => r.kind === kind);
+        return `<h3 style="margin:18px 0 8px;font-size:15px;">${heading}</h3>
+          <table><thead><tr><th style="width:90px;">${kind === "truck" ? "Truck" : "Trailer"}</th><th>License plate</th><th></th></tr></thead><tbody>${rows
+            .map((r) => `<tr data-rig="${escapeHtml(r.id)}">
+              <td><b>${escapeHtml(r.label)}</b></td>
+              <td><input type="text" data-rig-input="${escapeHtml(r.id)}" value="${escapeHtml(r.plate || "")}" placeholder="Not entered yet" maxlength="24" autocapitalize="characters" autocomplete="off" style="max-width:220px;" /></td>
+              <td><button class="small-btn" data-rig-save="${escapeHtml(r.id)}">Save</button> <span class="meta" data-rig-status="${escapeHtml(r.id)}"></span></td>
+            </tr>`)
+            .join("")}</tbody></table>`;
+      };
+      root.innerHTML = `<div class="meta" style="margin-bottom:6px;"><b id="rigs-summary">${have} of ${rigList.length}</b> have a plate entered.</div>
+        <div class="meta">Phones show these plates on a haul, and each haul keeps the plate it left with — changing one here never rewrites a haul that's already been made.</div>
+        ${section("truck", "Trucks")}${section("trailer", "Trailers")}`;
+      const flash = (id, msg, bad) => {
+        const el = root.querySelector(`[data-rig-status="${id}"]`);
+        el.textContent = msg;
+        el.style.color = bad ? "var(--danger)" : "var(--organic, #5C8A3A)";
+      };
+      const save = async (rig) => {
+        const input = root.querySelector(`[data-rig-input="${rig.id}"]`);
+        const btn = root.querySelector(`[data-rig-save="${rig.id}"]`);
+        btn.disabled = true;
+        flash(rig.id, "Saving…", false);
+        try {
+          const saved = await saveRigPlate(rig, input.value);
+          input.value = saved || "";
+          flash(rig.id, saved ? "Saved" : "Cleared", false);
+          document.getElementById("rigs-summary").textContent = `${rigList.filter((r) => r.plate).length} of ${rigList.length}`;
+        } catch (err) {
+          flash(rig.id, err.message, true);
+        } finally {
+          btn.disabled = false;
+        }
+      };
+      rigList.forEach((rig) => {
+        root.querySelector(`[data-rig-save="${rig.id}"]`).addEventListener("click", () => save(rig));
+        root.querySelector(`[data-rig-input="${rig.id}"]`).addEventListener("keydown", (e) => { if (e.key === "Enter") save(rig); });
+      });
     }
 
     // ---------------------------------------------------------------------
@@ -2401,6 +2651,14 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           <span class="legend-chip"><span class="legend-dot" style="background:var(--ai-yellow);"></span>AI read from photo</span>
         </div>
       `;
+      if (plateLine(r.truckPlate, r.trailerPlate, r.carrierName)) {
+        const vehicle = document.createElement("div");
+        vehicle.setAttribute("data-role", "haul-vehicle");
+        vehicle.className = "meta";
+        vehicle.style.marginBottom = "10px";
+        vehicle.textContent = `Vehicle: ${plateLine(r.truckPlate, r.trailerPlate, r.carrierName)}`;
+        wrap.appendChild(vehicle);
+      }
       const affRow = buildHaulAffidavitRow(r);
       if (affRow) wrap.appendChild(affRow);
       const grid = document.createElement("div");
@@ -2586,17 +2844,48 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       if (names.includes(current)) destinationFilterEl.value = current;
     }
 
-    function renderHaulsTable() {
-      populateDestinationFilter();
+    // What each haul adds to the two bushel totals at the bottom of the table:
+    // the driver's own entry, and the AI's reading of the ticket (counted only
+    // when that reading worked). A haul "differs" when those two aren't the
+    // same — which is exactly, and only, what makes the totals disagree. (The
+    // Check badge is separate: it calls anything within a bushel or 1% a match.)
+    const roundBu = (n) => Math.round(n * 100) / 100;
+    function haulBuContribution(r) {
+      return { driver: r._ticket?.net_bushels || 0, ai: r._read && !r._read.error ? r._read.net_bu || 0 : 0 };
+    }
+    function haulBuDiff(r) {
+      const { driver, ai } = haulBuContribution(r);
+      return roundBu(ai - driver);
+    }
+    const haulDiffers = (r) => Math.abs(haulBuDiff(r)) >= 0.005;
+    const fmtBuDiff = (d) => `${d > 0 ? "+" : d < 0 ? "−" : ""}${Math.abs(d).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} bu`;
+    // A short plain-words reason a haul differs, or "" when it doesn't.
+    function haulDiffNote(r) {
+      if (!haulDiffers(r)) return "";
+      if (!r._read || r._read.error) return "no AI reading — only the driver's bushels are in the total";
+      if (r._ticket?.net_bushels == null) return "driver entered no bushels — only the AI's are in the total";
+      if (r._read.net_bu == null) return "AI didn't read bushels — only the driver's are in the total";
+      return `Δ ${fmtBuDiff(haulBuDiff(r))} vs driver`;
+    }
+
+    // The one filter the table, the totals and the CSV all use, so they can't disagree.
+    function filteredHauls() {
       const search = searchEl.value.trim().toLowerCase();
       const statusFilter = statusFilterEl.value;
       const destinationFilter = destinationFilterEl.value;
-      let rows = allHauls.filter((r) => {
+      const diffOnly = haulsDiffOnlyEl.checked;
+      return allHauls.filter((r) => {
         if (statusFilter && r.originStatus !== statusFilter) return false;
         if (destinationFilter && r.destination !== destinationFilter) return false;
+        if (diffOnly && !haulDiffers(r)) return false;
         if (!search) return true;
         return [r.driver, r.origin, r.destination, r.ticketNumber].some((v) => (v || "").toLowerCase().includes(search));
       });
+    }
+
+    function renderHaulsTable() {
+      populateDestinationFilter();
+      let rows = filteredHauls();
       rows = [...rows].sort((a, b) => {
         const av = a[haulSortKey] ?? "";
         const bv = b[haulSortKey] ?? "";
@@ -2612,13 +2901,16 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const time = r.departed_at ? new Date(r.departed_at).toLocaleString() : "—";
         const checkBadge = `<span class="badge badge-${r.checkStatus}">${escapeHtml(r.checkLabel)}</span>`;
         const ticketMismatch = r.aiTicketNumber && r.ticketNumber !== "—" && r.aiTicketNumber !== r.ticketNumber && r.aiTicketComplete !== false;
-        const aiNetCell = ticketMismatch ? `${escapeHtml(r.aiNet)} <span title="AI read ticket #${escapeHtml(r.aiTicketNumber)}, driver entered ${escapeHtml(r.ticketNumber)}" style="color:var(--danger);">⚠</span>` : escapeHtml(r.aiNet);
+        const diffNote = haulDiffNote(r);
+        const aiNetCell =
+          (ticketMismatch ? `${escapeHtml(r.aiNet)} <span title="AI read ticket #${escapeHtml(r.aiTicketNumber)}, driver entered ${escapeHtml(r.ticketNumber)}" style="color:var(--danger);">⚠</span>` : escapeHtml(r.aiNet)) +
+          (diffNote ? `<div class="bu-diff" style="color:var(--gold);font-size:11px;">${escapeHtml(diffNote)}</div>` : "");
         tr.innerHTML = `
           <td>${expanded ? "▾" : "▸"} ${time}</td>
           <td>${escapeHtml(r.driver)}</td>
           <td>${escapeHtml(r.origin)}</td>
           <td>${escapeHtml(r.destination)}</td>
-          <td>${escapeHtml(r.rig)}</td>
+          <td>${escapeHtml(r.rig)}${plateLine(r.truckPlate, r.trailerPlate, r.carrierName) ? `<div class="meta rig-plates" style="font-size:11px;">${escapeHtml(plateLine(r.truckPlate, r.trailerPlate, r.carrierName))}</div>` : ""}</td>
           <td>${escapeHtml(r.ticketNumber)}</td>
           <td class="driver-val">${escapeHtml(r.driverNet)}</td>
           <td class="ai-val">${aiNetCell}</td>
@@ -2656,30 +2948,25 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       // own entry and the AI's reading of the actual printed ticket are
       // summed separately rather than picking one as "the" number.
       const haulsTotalsEl = document.getElementById("hauls-totals");
-      const driverBuTotal = rows.reduce((sum, r) => sum + (r._ticket?.net_bushels || 0), 0);
-      const aiBuTotal = rows.reduce((sum, r) => sum + (r._read && !r._read.error ? r._read.net_bu || 0 : 0), 0);
+      const driverBuTotal = rows.reduce((sum, r) => sum + haulBuContribution(r).driver, 0);
+      const aiBuTotal = rows.reduce((sum, r) => sum + haulBuContribution(r).ai, 0);
+      const totalDiff = roundBu(aiBuTotal - driverBuTotal);
+      const differingCount = rows.filter(haulDiffers).length;
       haulsTotalsEl.innerHTML = rows.length
         ? `<tr style="font-weight:600;border-top:2px solid var(--border);">
-            <td colspan="6">${rows.length} ticket${rows.length === 1 ? "" : "s"}</td>
+            <td colspan="6">${rows.length} ticket${rows.length === 1 ? "" : "s"}${differingCount ? ` · <span style="color:var(--gold);">${differingCount} differ</span>` : ""}</td>
             <td class="driver-val">${driverBuTotal.toLocaleString()} bu</td>
             <td class="ai-val">${aiBuTotal.toLocaleString()} bu</td>
-            <td colspan="2"></td>
+            <td colspan="2" id="hauls-total-diff" title="AI total minus driver total">${Math.abs(totalDiff) >= 0.005 ? `<span style="color:var(--gold);">Δ ${fmtBuDiff(totalDiff)}</span>` : "totals agree"}</td>
           </tr>`
         : "";
     }
 
     function downloadHaulsCsv() {
-      const search = searchEl.value.trim().toLowerCase();
-      const statusFilter = statusFilterEl.value;
+      const rows = filteredHauls();
       const destinationFilter = destinationFilterEl.value;
-      const rows = allHauls.filter((r) => {
-        if (statusFilter && r.originStatus !== statusFilter) return false;
-        if (destinationFilter && r.destination !== destinationFilter) return false;
-        if (!search) return true;
-        return [r.driver, r.origin, r.destination, r.ticketNumber].some((v) => (v || "").toLowerCase().includes(search));
-      });
       const csvEscape = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
-      const header = ["Departed", "Driver", "From", "To", "Truck/Trailer", "Ticket #", "Driver net lb", "Driver net bu", "AI net lb", "AI net bu", "Check status"];
+      const header = ["Departed", "Driver", "From", "To", "Truck/Trailer", "Ticket #", "Driver net lb", "Driver net bu", "AI net lb", "AI net bu", "Bu difference (AI − driver)", "Check status", "Truck plate", "Trailer plate", "Trucking company"];
       const lines = [header.map(csvEscape).join(",")];
       rows.forEach((r) => {
         lines.push([
@@ -2687,7 +2974,9 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           r.driver, r.origin, r.destination, r.rig, r.ticketNumber,
           r._ticket?.net_lb ?? "", r._ticket?.net_bushels ?? "",
           r._read && !r._read.error ? r._read.net_lb ?? "" : "", r._read && !r._read.error ? r._read.net_bu ?? "" : "",
+          haulDiffers(r) ? haulBuDiff(r) : 0,
           r.checkLabel,
+          r.truckPlate ?? "", r.trailerPlate ?? "", r.carrierName ?? "",
         ].map(csvEscape).join(","));
       });
       const blob = new Blob([lines.join("\n")], { type: "text/csv" });
