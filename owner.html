@@ -963,7 +963,7 @@
       contract.cash_price != null ? ` · est. ${fmtUsdExact(bushels * contract.cash_price)} at $${Number(contract.cash_price).toFixed(2)}/bu` : "";
 
     // The block shown under a load that's split: each contract, with its bushels.
-    function buildSplitBlock(h, { currentContractId = null } = {}) {
+    function buildSplitBlock(h, { currentContractId = null, settlementContext = null } = {}) {
       const s = haulSplit(h);
       const box = document.createElement("div");
       box.setAttribute("data-role", "split-block");
@@ -975,11 +975,21 @@
         ? `Split across ${s.parts.length} contracts — ${fmtBuExact(s.total)} ticket`
         : `Only part of this load is on a contract — ${fmtBuExact(s.total)} ticket`;
       box.appendChild(title);
+      // On the Settlements tab each part also says which settlement it's on (or that none yet).
+      const settlementNote = (contractId) => {
+        if (!settlementContext) return "";
+        const hit = partSettlement(h.haulId, contractId);
+        if (!hit) return " · not on a settlement yet";
+        const which = hit.settlement.id === settlementContext.currentSettlementId
+          ? "on this settlement"
+          : `on the ${destName(hit.settlement.destination_id)} ${hit.settlement.settlement_date ? new Date(hit.settlement.settlement_date).toLocaleDateString() : "undated"} settlement`;
+        return ` · ${which}${hit.assignment.bushels == null ? " (whole load)" : ""}`;
+      };
       s.parts.forEach((p) => {
         const line = document.createElement("div");
         line.setAttribute("data-role", "split-line");
         line.setAttribute("data-contract-id", p.contract.id);
-        line.textContent = `${contractShortLabel(p.contract)} — ${fmtBuExact(p.bushels)}${estAtContractPrice(p.contract, p.bushels)}${p.contract.id === currentContractId ? "  ← this contract" : ""}`;
+        line.textContent = `${contractShortLabel(p.contract)} — ${fmtBuExact(p.bushels)}${estAtContractPrice(p.contract, p.bushels)}${p.contract.id === currentContractId ? "  ← this contract" : ""}${settlementNote(p.contract.id)}`;
         if (p.contract.id === currentContractId) line.style.fontWeight = "600";
         box.appendChild(line);
       });
@@ -987,12 +997,53 @@
         const rest = document.createElement("div");
         rest.setAttribute("data-role", "split-remaining");
         rest.style.color = "#E2812B";
-        rest.textContent = `Not yet on a contract — ${fmtBuExact(s.remaining)}`;
+        rest.textContent = `Not yet on a contract — ${fmtBuExact(s.remaining)}${settlementNote(null)}`;
         box.appendChild(rest);
       }
       return box;
     }
-    const splitLoadCount = (assignments) => assignments.filter((a) => { const hh = allHauls.find((x) => x.haulId === a.shipmentClientId); return hh && haulSplit(hh).isSplit; }).length;
+    const splitLoadCount = (assignments) => new Set(assignments.filter((a) => { const hh = allHauls.find((x) => x.haulId === a.shipmentClientId); return hh && haulSplit(hh).isSplit; }).map((a) => a.shipmentClientId)).size;
+
+    // ---- Loads and their parts, on settlements ----
+    // How many bushels an assignment puts on its settlement: the part, if it's a
+    // part of a load, otherwise the whole ticket.
+    const assignmentBushels = (a, h) => (a.bushels != null ? a.bushels : (h && h._ticket && h._ticket.net_bushels) || 0);
+    const settlementRowsForHaul = (haulId) =>
+      allSettlements.flatMap((s) => s.assignments.filter((a) => a.shipmentClientId === haulId).map((a) => ({ settlement: s, assignment: a })));
+    // Which settlement a contract's part of a load is on (contractId null = the part not on any contract).
+    // A load that's on a settlement whole has every part on it.
+    function partSettlement(haulId, contractId) {
+      const rows = settlementRowsForHaul(haulId);
+      return rows.find((r) => r.assignment.bushels == null) || rows.find((r) => r.assignment.bushels != null && (r.assignment.contractId ?? null) === (contractId ?? null)) || null;
+    }
+    // What of a load can still go on a settlement. An ordinary load goes on whole, as
+    // it always has. A load split across contracts goes on in PARTS — one per contract,
+    // plus whatever isn't on any contract — so a part the elevator pays on a LATER
+    // settlement stays available; or whole, when one settlement covers all of it.
+    // A load already on a settlement whole has nothing left.
+    function unsettledUnits(h) {
+      const rows = settlementRowsForHaul(h.haulId);
+      if (rows.some((r) => r.assignment.bushels == null)) return [];
+      const sp = haulSplit(h);
+      if (!sp.isSplit) return rows.length === 0 ? [{ kind: "whole", bushels: null, contractId: null }] : [];
+      // one unit per contract (a load allocated twice to the same contract is one part)
+      const byContract = new Map();
+      sp.parts.forEach((p) => {
+        const prev = byContract.get(p.contract.id) || { kind: "part", bushels: 0, contractId: p.contract.id, contract: p.contract };
+        prev.bushels += p.bushels;
+        byContract.set(p.contract.id, prev);
+      });
+      const units = [...byContract.values()].filter((u) => !rows.some((r) => r.assignment.contractId === u.contractId));
+      if (sp.remaining > 0.001 && !rows.some((r) => r.assignment.bushels != null && r.assignment.contractId == null)) {
+        units.push({ kind: "part", bushels: sp.remaining, contractId: null });
+      }
+      if (rows.length === 0) units.push({ kind: "whole", bushels: null, contractId: null });
+      return units;
+    }
+    function unitLabel(u, h) {
+      if (u.kind === "whole") return `Whole load — ${fmtBuExact((h._ticket && h._ticket.net_bushels) || 0)} on this one settlement`;
+      return `${fmtBuExact(u.bushels)} — ${u.contractId != null && u.contract ? contractShortLabel(u.contract) : "not on a contract"}`;
+    }
 
     // On a settlement: where all of its loads' bushels went, contract by contract.
     function buildSettlementContractBreakdown(s) {
@@ -1001,6 +1052,19 @@
       s.assignments.forEach((a) => {
         const hh = allHauls.find((x) => x.haulId === a.shipmentClientId);
         if (!hh) return;
+        if (a.bushels != null) {
+          // a PART of the load: exactly these bushels, against the contract it was put against
+          const owner = a.contractId != null ? allContracts.find((x) => x.id === a.contractId) : null;
+          if (owner) {
+            any = true;
+            const prev = byContract.get(owner.id) || { contract: owner, bushels: 0 };
+            prev.bushels += a.bushels;
+            byContract.set(owner.id, prev);
+          } else {
+            notOnContract += a.bushels;
+          }
+          return;
+        }
         const sp = haulSplit(hh);
         sp.parts.forEach((p) => {
           any = true;
@@ -1232,15 +1296,24 @@
       const byS = new Map();
       (stRes.data || []).forEach((row) => {
         if (!byS.has(row.settlement_id)) byS.set(row.settlement_id, []);
-        byS.get(row.settlement_id).push({ id: row.id, shipmentClientId: row.shipment_client_id, elevatorPaidShareOnly: row.elevator_paid_share_only });
+        // bushels / contractId: set when this is a PART of a load (null = the whole load, as every older row is)
+        byS.get(row.settlement_id).push({ id: row.id, shipmentClientId: row.shipment_client_id, elevatorPaidShareOnly: row.elevator_paid_share_only, bushels: row.bushels ?? null, contractId: row.contract_id ?? null });
       });
       allSettlements = (sRes.data || []).map((s) => ({ ...s, assignments: byS.get(s.id) || [] }));
       settlementsLoaded = true;
       statusLine.textContent = `${allSettlements.length} settlement${allSettlements.length === 1 ? "" : "s"}`;
     }
 
-    async function assignToSettlement(haulId, settlementId) {
-      const { error } = await supabase.from("settlement_tickets").insert({ settlement_id: settlementId, shipment_client_id: haulId });
+    // Put a load — or one PART of it — on a settlement. A part names how many
+    // bushels and which contract they were allocated to; a whole load names neither
+    // (and so doesn't depend on the columns for them existing).
+    async function assignToSettlement(haulId, settlementId, unit = null) {
+      const payload = { settlement_id: settlementId, shipment_client_id: haulId };
+      if (unit && unit.kind === "part") {
+        payload.bushels = Math.round(unit.bushels * 100) / 100;
+        if (unit.contractId != null) payload.contract_id = unit.contractId;
+      }
+      const { error } = await supabase.from("settlement_tickets").insert(payload);
       if (error) { alert("Could not assign: " + error.message); return; }
       await fetchSettlements();
       render();
@@ -1274,14 +1347,10 @@
         settlementsListEl.innerHTML = `<div style="color:var(--text-muted);font-size:13px;">No settlements yet — click "+ Upload settlement" above.</div>`;
         return;
       }
-      const assignedElsewhere = new Set(allSettlements.flatMap((s) => s.assignments.map((a) => a.shipmentClientId)));
       allSettlements.forEach((s) => {
         const expanded = expandedSettlements.has(s.id);
-        const totalBushels = s.assignments.reduce((sum, a) => {
-          const h = allHauls.find((x) => x.haulId === a.shipmentClientId);
-          const bu = h && h._ticket ? h._ticket.net_bushels : null;
-          return sum + (bu || 0);
-        }, 0);
+        // what's actually ON this settlement: the part, for a part of a load; the whole ticket otherwise
+        const totalBushels = s.assignments.reduce((sum, a) => sum + assignmentBushels(a, allHauls.find((x) => x.haulId === a.shipmentClientId)), 0);
 
         const splitCount = splitLoadCount(s.assignments);
         const card = document.createElement("div");
@@ -1362,7 +1431,12 @@
           } else {
             sortByTicketNumber(s.assignments, (a) => allHauls.find((x) => x.haulId === a.shipmentClientId)?.ticketNumber).forEach((a) => {
               const h = allHauls.find((x) => x.haulId === a.shipmentClientId);
-              const row = pickRow(haulSummary(h), "Remove", () => unassignFromSettlement(a.id));
+              // A part of a load says how much of the ticket, and for which contract
+              const partOwner = a.contractId != null ? allContracts.find((x) => x.id === a.contractId) : null;
+              const rowText = a.bushels != null
+                ? `${haulSummary(h)} — ${fmtBuExact(a.bushels)} of this ${fmtBuExact((h && h._ticket && h._ticket.net_bushels) || 0)} ticket · ${partOwner ? contractShortLabel(partOwner) : "not on a contract"}`
+                : haulSummary(h);
+              const row = pickRow(rowText, "Remove", () => unassignFromSettlement(a.id));
               // ticket-pick-row is a horizontal flex row (label + button) —
               // wrap it with the share-crop decision in an outer container
               // so the decision sits as its OWN block below the row,
@@ -1400,8 +1474,17 @@
                 }
                 container.appendChild(shareWrap);
               }
-              // a load split across contracts says how, and by how much
-              if (h && haulSplit(h).isSplit) container.appendChild(buildSplitBlock(h));
+              // a load split across contracts says how, by how much, and which settlement each part is on
+              if (h && haulSplit(h).isSplit) container.appendChild(buildSplitBlock(h, { settlementContext: { currentSettlementId: s.id } }));
+              // a split load sitting here WHOLE can't have a part paid on a later settlement until it's taken off
+              if (h && a.bushels == null && haulSplit(h).isSplit) {
+                const hint = document.createElement("div");
+                hint.className = "meta";
+                hint.setAttribute("data-role", "whole-split-hint");
+                hint.style.cssText = "margin:-4px 0 8px;font-size:12px;";
+                hint.textContent = "The whole load is on this settlement. To put each part on a different settlement, remove it here and assign the parts separately.";
+                container.appendChild(hint);
+              }
               detail.appendChild(container);
             });
           }
@@ -1412,7 +1495,9 @@
           // formatting differences don't hide a real match.
           const extractedSet = new Set((s.extracted_ticket_numbers || []).map(normalizeTicketNumber));
           const isOnSettlement = (h) => extractedSet.size > 0 && extractedSet.has(normalizeTicketNumber(h.ticketNumber));
-          let eligible = sortByTicketNumber(allHauls.filter((h) => h.checkStatus !== "none" && !assignedElsewhere.has(h.haulId) && h.destinationId === s.destination_id), (h) => h.ticketNumber);
+          // loads for this buyer with something still to put on a settlement (a load with only
+          // some parts on settlements stays here until the rest are too)
+          let eligible = sortByTicketNumber(allHauls.filter((h) => h.checkStatus !== "none" && h.destinationId === s.destination_id && unsettledUnits(h).length > 0), (h) => h.ticketNumber);
           if (extractedSet.size > 0) {
             // Matched tickets first, each group still sorted by ticket
             // number within itself — easiest ones to act on right at the top.
@@ -1461,15 +1546,23 @@
             detail.appendChild(none);
           } else {
             eligible.forEach((h) => {
-              const pick = pickRow(haulSummary(h), "Assign", () => assignToSettlement(h.haulId, s.id), "gold", isOnSettlement(h));
-              if (haulSplit(h).isSplit) {
-                const wrapRow = document.createElement("div");
-                wrapRow.appendChild(pick);
-                wrapRow.appendChild(buildSplitBlock(h));
-                detail.appendChild(wrapRow);
-              } else {
-                detail.appendChild(pick);
+              const units = unsettledUnits(h);
+              const matched = isOnSettlement(h);
+              if (units.length === 1 && units[0].kind === "whole") {
+                // an ordinary load: assigned whole, exactly as always
+                detail.appendChild(pickRow(haulSummary(h), "Assign", () => assignToSettlement(h.haulId, s.id, units[0]), "gold", matched));
+                return;
               }
+              // a split load: one line for each part still to be settled, plus the whole load
+              const wrapRow = document.createElement("div");
+              wrapRow.setAttribute("data-role", "split-load-offer");
+              const title = document.createElement("div");
+              title.style.cssText = `font-size:13px;margin:6px 0 2px;${matched ? "color:var(--gold);font-weight:600;" : ""}`;
+              title.textContent = `${matched ? "✓ " : ""}${haulSummary(h)}`;
+              wrapRow.appendChild(title);
+              wrapRow.appendChild(buildSplitBlock(h, { settlementContext: { currentSettlementId: s.id } }));
+              units.forEach((u) => wrapRow.appendChild(pickRow(unitLabel(u, h), "Assign", () => assignToSettlement(h.haulId, s.id, u), "gold", matched)));
+              detail.appendChild(wrapRow);
             });
           }
           card.appendChild(detail);
@@ -2386,10 +2479,8 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       });
       const owedByPartner = new Map(); // partnerId -> { owed, undecidedCount }
       allSettlements.forEach((s) => {
-        const settlementBushels = s.assignments.reduce((sum, a) => {
-          const h = allHauls.find((x) => x.haulId === a.shipmentClientId);
-          return sum + ((h && h._ticket && h._ticket.net_bushels) || 0);
-        }, 0);
+        // bushels actually ON this settlement (a part of a load counts as the part, not the whole ticket)
+        const settlementBushels = s.assignments.reduce((sum, a) => sum + assignmentBushels(a, allHauls.find((x) => x.haulId === a.shipmentClientId)), 0);
         s.assignments.forEach((a) => {
           const h = allHauls.find((x) => x.haulId === a.shipmentClientId);
           if (!h || !h.splitPartnerId) return;
@@ -2405,7 +2496,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           const entry = owedByPartner.get(h.splitPartnerId);
           if (a.elevatorPaidShareOnly == null) { entry.undecidedCount++; return; }
           if (a.elevatorPaidShareOnly === true) return; // elevator already excluded the partner's share — nothing further owed
-          const bu = (h._ticket && h._ticket.net_bushels) || 0;
+          const bu = assignmentBushels(a, h);
           const haulValue = settlementBushels > 0 && s.total_amount != null ? (bu / settlementBushels) * s.total_amount : 0;
           entry.owed += haulValue * (h.splitPct / 100);
         });
