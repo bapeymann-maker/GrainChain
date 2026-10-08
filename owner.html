@@ -79,6 +79,8 @@
     .ticket-pick-row:last-child { border-bottom: none; }
     .small-btn { font-size: 12px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
     .small-btn.gold { border-color: var(--gold); background: var(--gold-dark); color: var(--gold); }
+    .small-btn.danger { border-color: var(--danger); color: var(--danger); }
+    .small-btn.danger-solid { border-color: var(--danger); background: var(--danger); color: #fff; }
     .small-btn:disabled { opacity: .5; cursor: default; }
     /* two-step sign-in */
     #mfa-view { display: none; flex-direction: column; gap: 14px; max-width: 360px; margin: 80px auto; padding: 0 20px; }
@@ -163,6 +165,7 @@
         <option value="">All destinations</option>
       </select>
       <button id="hauls-csv-btn" style="display:none;">Download CSV</button>
+      <button id="hauls-scan-btn" style="display:none;" title="Enter a haul and its scale ticket by taking or choosing a photo of the ticket">Scan a ticket</button>
       <label id="hauls-diff-wrap" style="display:none;align-items:center;gap:6px;font-size:13px;cursor:pointer;" title="Only the tickets where the driver's bushels and the AI's reading aren't the same — the ones that make the two totals disagree"><input type="checkbox" id="hauls-diff-only" /> Differences only</label>
       <button id="view-dashboard-btn" class="view-btn">Dashboard</button>
       <button id="view-harvest-btn" class="view-btn">Harvest</button>
@@ -347,6 +350,7 @@
     const statusFilterEl = document.getElementById("status-filter");
     const destinationFilterEl = document.getElementById("destination-filter");
     const haulsCsvBtnEl = document.getElementById("hauls-csv-btn");
+    const haulsScanBtnEl = document.getElementById("hauls-scan-btn");
     const haulsDiffWrapEl = document.getElementById("hauls-diff-wrap");
     const haulsDiffOnlyEl = document.getElementById("hauls-diff-only");
     const refreshBtn = document.getElementById("refresh-btn");
@@ -777,6 +781,7 @@
       // and By Field are about bins/fields, not where a load was sold to.
       destinationFilterEl.style.display = mode === "hauls" ? "" : "none";
       haulsCsvBtnEl.style.display = mode === "hauls" ? "" : "none";
+      haulsScanBtnEl.style.display = mode === "hauls" ? "" : "none";
       haulsDiffWrapEl.style.display = mode === "hauls" ? "flex" : "none";
 
       if (mode === "hauls" && !haulsLoaded) await fetchHauls();
@@ -956,7 +961,7 @@
           <td>${escapeHtml(r.test_weight)}</td>
           <td>${escapeHtml(r.bin)}</td>
           <td>${loadAffidavitCell(r, affMatches)}</td>
-          <td><button class="small-btn" data-edit-load="${escapeHtml(String(r.loadId))}">Edit</button></td>
+          <td style="white-space:nowrap;"><button class="small-btn" data-edit-load="${escapeHtml(String(r.loadId))}">Edit</button> <button class="small-btn danger" data-delete-load="${escapeHtml(String(r.loadId))}">Delete</button></td>
         `;
         rowsEl.appendChild(tr);
       });
@@ -965,6 +970,12 @@
         btn.addEventListener("click", () => {
           const row = allLoads.find((x) => String(x.loadId) === btn.getAttribute("data-edit-load"));
           if (row) editLoad(row.raw);
+        });
+      });
+      rowsEl.querySelectorAll("[data-delete-load]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const row = allLoads.find((x) => String(x.loadId) === btn.getAttribute("data-delete-load"));
+          if (row) deleteLoad(row);
         });
       });
     }
@@ -1548,7 +1559,7 @@
         if (expanded) {
           const detail = document.createElement("div");
           detail.className = "item-detail";
-          detail.appendChild(editButtonRow("Edit contract", "edit-contract", () => editContract(c)));
+          detail.appendChild(editButtonRow("Edit contract", "edit-contract", () => editContract(c), { label: "Delete contract", role: "delete-contract", handler: () => deleteContract(c) }));
           if (c.notes) {
             const n = document.createElement("div");
             n.className = "meta";
@@ -1749,7 +1760,7 @@
         if (expanded) {
           const detail = document.createElement("div");
           detail.className = "item-detail";
-          detail.appendChild(editButtonRow("Edit settlement", "edit-settlement", () => editSettlement(s)));
+          detail.appendChild(editButtonRow("Edit settlement", "edit-settlement", () => editSettlement(s), { label: "Delete settlement", role: "delete-settlement", handler: () => deleteSettlement(s) }));
           if (s.notes) {
             const n = document.createElement("div");
             n.className = "meta";
@@ -2863,17 +2874,507 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       await ensureDestinations();
       openEditor({ title: "Edit settlement", sections: [settlementSection(st)], onSaved: async () => { await fetchSettlements(); render(); } });
     }
-    function editButtonRow(label, role, handler) {
+    function editButtonRow(label, role, handler, del) {
       const row = document.createElement("div");
-      row.style.cssText = "display:flex;justify-content:flex-end;margin-bottom:8px;";
+      row.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-bottom:8px;";
       const btn = document.createElement("button");
       btn.className = "small-btn";
       btn.textContent = label;
       btn.setAttribute("data-role", role);
       btn.addEventListener("click", (e) => { e.stopPropagation(); handler(); });
       row.appendChild(btn);
+      if (del) {
+        const d = document.createElement("button");
+        d.className = "small-btn danger";
+        d.textContent = del.label;
+        d.setAttribute("data-role", del.role);
+        d.addEventListener("click", (e) => { e.stopPropagation(); del.handler(); });
+        row.appendChild(d);
+      }
       return row;
     }
+
+    // ---- deleting ----
+    // Every delete asks first (saying what else goes with it), needs the 2FA
+    // code, runs as one all-or-nothing database function, and leaves a full
+    // copy of what was removed in the Edit log. See allow-owner-deletes.sql.
+    function confirmDelete({ title, lines }) {
+      return new Promise((resolve) => {
+        const m = openModal(title);
+        const body = document.createElement("div");
+        body.setAttribute("data-role", "delete-summary");
+        body.style.cssText = "font-size:13px;display:flex;flex-direction:column;gap:6px;";
+        lines.filter(Boolean).forEach((l) => { const d = document.createElement("div"); d.textContent = l; body.appendChild(d); });
+        const note = document.createElement("div");
+        note.className = "meta";
+        note.style.marginTop = "6px";
+        note.textContent = "This can't be undone from this page. A full copy of what's removed is kept in the Edit log.";
+        body.appendChild(note);
+        m.box.appendChild(body);
+        const actions = document.createElement("div");
+        actions.className = "modal-actions";
+        const cancel = document.createElement("button");
+        cancel.className = "small-btn"; cancel.textContent = "Cancel"; cancel.setAttribute("data-role", "delete-cancel");
+        const go = document.createElement("button");
+        go.className = "small-btn danger-solid"; go.textContent = "Delete permanently"; go.setAttribute("data-role", "delete-confirm");
+        cancel.addEventListener("click", () => { m.close(); resolve(false); });
+        go.addEventListener("click", () => { m.close(); resolve(true); });
+        actions.appendChild(cancel); actions.appendChild(go);
+        m.box.appendChild(actions);
+      });
+    }
+    function showNotice(title, text, role) {
+      const m = openModal(title);
+      const msg = document.createElement("div");
+      msg.className = "modal-error";
+      msg.style.marginTop = "0";
+      msg.setAttribute("data-role", role || "notice");
+      msg.textContent = text;
+      m.box.appendChild(msg);
+      const actions = document.createElement("div");
+      actions.className = "modal-actions";
+      const ok = document.createElement("button");
+      ok.className = "small-btn"; ok.textContent = "OK"; ok.addEventListener("click", m.close);
+      actions.appendChild(ok); m.box.appendChild(actions);
+      return m;
+    }
+    async function performDelete(rpc, args, refresh) {
+      const { error } = await supabase.rpc(rpc, args);
+      if (error) {
+        const text = /Two-step sign-in required/i.test(error.message)
+          ? "Your sign-in hasn't confirmed its authenticator code. Confirm it, then try again."
+          : /could not find the function|PGRST202|schema cache/i.test(error.message) || error.code === "PGRST202"
+          ? "Deleting isn't set up yet. Run allow-owner-deletes.sql in the Supabase SQL Editor, then reload this page."
+          : error.message;
+        showNotice("Nothing was deleted", text, "delete-error");
+        if (/authenticator code/.test(text)) ensureEditSession();
+        return false;
+      }
+      await refresh();
+      statusLine.textContent = "Deleted ✓ — a full copy is in the Edit log";
+      return true;
+    }
+    async function deleteLoad(r) {
+      if (!(await ensureEditSession())) return;
+      const ok = await confirmDelete({
+        title: "Delete this field-to-bin load?",
+        lines: [`${r.logged_at ? new Date(r.logged_at).toLocaleString() : "Unknown time"} — ${r.worker || "?"}`, `${r.field || "?"} → ${r.bin || "no bin"}`, `${r.load}, ${r.crop}`],
+      });
+      if (!ok) return;
+      await performDelete("owner_delete_load", { p_client_id: r.raw.client_id }, async () => { await fetchLoads(); render(); });
+    }
+    async function deleteHaul(h) {
+      if (!(await ensureEditSession())) return;
+      // what else goes with it, so the confirmation can say so
+      const [ct, st] = await Promise.all([
+        supabase.from("contract_tickets").select("id").eq("shipment_client_id", h.haulId),
+        supabase.from("settlement_tickets").select("id").eq("shipment_client_id", h.haulId),
+      ]);
+      const nContract = (ct.data || []).length, nSettle = (st.data || []).length;
+      const links = [];
+      if (nContract) links.push(`${nContract} contract assignment${nContract === 1 ? "" : "s"}`);
+      if (nSettle) links.push(`${nSettle} settlement assignment${nSettle === 1 ? "" : "s"}`);
+      const ok = await confirmDelete({
+        title: "Delete this haul?",
+        lines: [
+          `Ticket ${h.ticketNumber} — ${h.destination}`,
+          `${h.origin} · ${h.driver || "?"} · ${h.departed_at ? new Date(h.departed_at).toLocaleString() : "?"}`,
+          `${h.driverNet}`,
+          "The haul and its scale ticket entries will be removed." + (links.length ? ` Also removed: ${links.join(" and ")}.` : ""),
+          "The ticket photo and its AI reading stay on file.",
+        ],
+      });
+      if (!ok) return;
+      await performDelete("owner_delete_haul", { p_client_id: h.haulId }, async () => {
+        await fetchHauls();
+        if (contractsLoaded) await fetchContracts();
+        if (settlementsLoaded) await fetchSettlements();
+        render();
+      });
+    }
+    async function deleteContract(c) {
+      if (!(await ensureEditSession())) return;
+      const ok = await confirmDelete({
+        title: "Delete this contract?",
+        lines: [`Contract ${c.contract_number || "(no number)"} — ${c.crop}, ${Number(c.bushels).toLocaleString()} bu`, c.assignments && c.assignments.length ? `${c.assignments.length} load(s) are still assigned to it, so the database will refuse. Take them off first.` : "No loads are assigned to it."],
+      });
+      if (!ok) return;
+      await performDelete("owner_delete_contract", { p_id: c.id }, async () => { await fetchContracts(); render(); });
+    }
+    async function deleteSettlement(s) {
+      if (!(await ensureEditSession())) return;
+      const n = (s.assignments || []).length;
+      const ok = await confirmDelete({
+        title: "Delete this settlement?",
+        lines: [`Settlement ${s.id}${s.settlement_date ? " — " + s.settlement_date : ""}`, n ? `${n} load assignment${n === 1 ? "" : "s"} will be removed from it. Those loads go back to unassigned; the loads themselves are not deleted.` : "No loads are on it.", s.paid ? "It is marked paid, so the database will refuse. Mark it unpaid first." : ""],
+      });
+      if (!ok) return;
+      await performDelete("owner_delete_settlement", { p_id: s.id }, async () => { await fetchSettlements(); render(); });
+    }
+
+    // =====================================================================
+    // Scan a ticket -> haul. For tickets from drivers who aren't employees:
+    // take or choose a photo, the AI reads it, you check the form it fills
+    // in, and the haul + ticket are saved together (allow-owner-scan-entry.sql).
+    // The photo goes into the same private bucket the phones use, so the
+    // normal "driver entered vs. AI read" comparison works on it too.
+    // =====================================================================
+    const SCAN_TYPES = ["image/jpeg", "image/png", "image/webp"];
+    const SCAN_EXT = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+    const SCAN_MAX_BYTES = 5 * 1024 * 1024;
+    const scanTiming = () => Object.assign({ pollMs: 3000, retryAfterMs: 21000, giveUpMs: 75000 }, window.__GC_SCAN_TIMING || {});
+    const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+    const mk = (tag, props = {}, kids = []) => {
+      const e = document.createElement(tag);
+      Object.entries(props).forEach(([k, v]) => {
+        if (k === "text") e.textContent = v;
+        else if (k === "style") e.style.cssText = v;
+        else if (k === "className") e.className = v;
+        else e.setAttribute(k, v);
+      });
+      kids.forEach((c) => e.appendChild(c));
+      return e;
+    };
+
+    // "10/03/2026" + "7:49 PM" (or 24-hour) -> an ISO time, read as local time
+    // (the office is in Central, like the scale). No time on the ticket -> noon.
+    function parseTicketDateTime(dateStr, timeStr) {
+      if (!dateStr) return null;
+      let y, mo, da, m;
+      const d = String(dateStr).trim();
+      if ((m = d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/))) { mo = +m[1]; da = +m[2]; y = +m[3]; if (y < 100) y += 2000; }
+      else if ((m = d.match(/^(\d{4})-(\d{2})-(\d{2})$/))) { y = +m[1]; mo = +m[2]; da = +m[3]; }
+      else return null;
+      let hh = 12, mm = 0;
+      if (timeStr) {
+        const t = String(timeStr).trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])?$/);
+        if (!t) return null;
+        hh = +t[1]; mm = +t[2];
+        if (t[3]) { const pm = /p/i.test(t[3]); if (hh < 1 || hh > 12) return null; hh = (hh % 12) + (pm ? 12 : 0); }
+        else if (hh > 23) return null;
+        if (mm > 59) return null;
+      }
+      const dt = new Date(y, mo - 1, da, hh, mm);
+      if (Number.isNaN(dt.getTime()) || dt.getMonth() !== mo - 1 || dt.getDate() !== da) return null;
+      return dt.toISOString();
+    }
+    const cropFromCommodity = (s) => (/soy/i.test(s || "") ? "Soybeans" : /oat/i.test(s || "") ? "Oats" : /corn/i.test(s || "") ? "Corn" : null);
+    // The buyer on the ticket -> one of our buyers, if it is clearly one of them.
+    function matchDestinationId(name, location) {
+      const norm = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+      const n = norm(name);
+      if (!n) return null;
+      const byName = allDestinations.filter((d) => { const dn = norm(d.name); return dn && (n.includes(dn) || dn.includes(n)); });
+      if (byName.length === 1) return byName[0].id;
+      if (byName.length > 1) {
+        const city = norm(location).split(" ")[0];
+        const hit = city ? byName.filter((d) => norm(d.location).split(" ")[0] === city) : [];
+        return hit.length === 1 ? hit[0].id : null;
+      }
+      return null;
+    }
+
+    // Phones take 8-12 MB photos; the bucket takes 5 MB. Shrink to a readable
+    // size first. If the browser can't, send the original (and check its size).
+    async function prepareTicketPhoto(file) {
+      try {
+        const bmp = await createImageBitmap(file);
+        const scale = Math.min(1, 2200 / Math.max(bmp.width, bmp.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(bmp.width * scale));
+        canvas.height = Math.max(1, Math.round(bmp.height * scale));
+        canvas.getContext("2d").drawImage(bmp, 0, 0, canvas.width, canvas.height);
+        const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.85));
+        if (blob) return { blob, type: "image/jpeg" };
+      } catch { /* fall through to the original file */ }
+      return { blob: file, type: file.type || "" };
+    }
+    async function callRetryRead(path) {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      if (!token) throw new Error("Not logged in");
+      const res = await fetch("/api/retry-ticket-read", {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ path }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error || `Request failed (${res.status})`);
+      return result;
+    }
+
+    async function openScanEntry() {
+      if (!(await ensureEditSession())) return;
+      await ensureDestinations();
+      const m = openModal("Enter a haul from a ticket photo");
+      const stage = mk("div", { "data-role": "scan-stage" });
+      m.box.appendChild(stage);
+      let closed = false;
+      const close = () => { closed = true; m.close(); };
+      const clear = () => { stage.innerHTML = ""; };
+      const buttons = (...btns) => { const row = mk("div", { className: "modal-actions" }); btns.forEach((b) => row.appendChild(b)); stage.appendChild(row); return row; };
+      const button = (text, role, cls, onClick) => { const b = mk("button", { className: "small-btn" + (cls ? " " + cls : ""), text, "data-role": role }); b.addEventListener("click", onClick); return b; };
+      const errorLine = (text) => { const e = mk("div", { className: "modal-error", "data-role": "scan-error", text }); stage.appendChild(e); return e; };
+
+      // ---- step 1: choose a photo ----
+      function stepPick(problem) {
+        clear();
+        stage.appendChild(mk("div", { style: "font-size:13px;line-height:1.5;", text: "Take a photo of the scale ticket, or choose one you already have. Lay it flat with the whole ticket in view, and make sure the ticket number and date can be read. The AI reads it and fills in the form below; you check it before anything is saved." }));
+        if (problem) errorLine(problem);
+        const camera = mk("input", { type: "file", accept: "image/*", capture: "environment", style: "display:none;", "data-role": "scan-file-camera" });
+        const library = mk("input", { type: "file", accept: "image/*", style: "display:none;", "data-role": "scan-file-library" });
+        [camera, library].forEach((inp) => inp.addEventListener("change", () => { const f = inp.files && inp.files[0]; if (f) handleFile(f); }));
+        stage.appendChild(camera); stage.appendChild(library);
+        buttons(
+          button("Cancel", "scan-cancel", "", close),
+          button("Choose a photo", "scan-choose", "", () => library.click()),
+          button("Take a photo", "scan-take", "gold", () => camera.click()),
+        );
+      }
+
+      // ---- step 2: upload, then wait for the reading ----
+      async function handleFile(file) {
+        clear();
+        const status = mk("div", { "data-role": "scan-status", style: "font-size:13px;", text: "Preparing the photo…" });
+        stage.appendChild(status);
+        const prepared = await prepareTicketPhoto(file);
+        if (closed) return;
+        if (!SCAN_TYPES.includes(prepared.type)) return stepPick("That file isn't a JPEG, PNG or WebP photo. Try taking the photo again.");
+        if (prepared.blob.size > SCAN_MAX_BYTES) return stepPick("That photo is over 5 MB even after shrinking. Try a closer photo of just the ticket.");
+        const shipId = crypto.randomUUID(), ticketId = crypto.randomUUID();
+        const path = `${shipId}/${ticketId}.${SCAN_EXT[prepared.type]}`;
+        status.textContent = "Uploading the photo…";
+        const up = await supabase.storage.from("scale-tickets").upload(path, prepared.blob, { contentType: prepared.type, upsert: false });
+        if (closed) return;
+        if (up.error) {
+          const why = /row-level security|policy|not authorized|403/i.test(up.error.message)
+            ? "The database refused the upload. Run allow-owner-scan-entry.sql in the Supabase SQL Editor, and make sure your authenticator code is confirmed (sign out and in if needed)."
+            : up.error.message;
+          return stepPick("The photo wasn't uploaded: " + why);
+        }
+        const photo = { shipId, ticketId, path, blob: prepared.blob, url: URL.createObjectURL(prepared.blob) };
+        await stepReading(photo);
+      }
+
+      async function stepReading(photo) {
+        clear();
+        const t = scanTiming();
+        stage.appendChild(mk("div", { "data-role": "scan-reading", style: "font-size:13px;", text: "Reading the ticket… this usually takes 10 to 30 seconds." }));
+        let skipped = false, read = null;
+        const skip = button("Skip — I'll type it in", "scan-skip", "", () => { skipped = true; });
+        buttons(button("Cancel", "scan-cancel", "", () => { skipped = true; close(); }), skip);
+        const started = Date.now();
+        let kicked = false, kickError = null;
+        while (!closed && !skipped && !read && Date.now() - started < t.giveUpMs) {
+          const { data } = await supabase.from("ticket_reads").select("*").eq("ticket_client_id", photo.ticketId).order("read_at", { ascending: false }).limit(1);
+          if (data && data.length) { read = data[0]; break; }
+          if (!kicked && Date.now() - started >= t.retryAfterMs) {
+            // the storage webhook sometimes doesn't fire; ask for the read directly
+            kicked = true;
+            callRetryRead(photo.path).catch((e) => { kickError = e.message; });
+          }
+          for (let waited = 0; waited < t.pollMs && !skipped && !closed; waited += 250) await sleepMs(Math.min(250, t.pollMs - waited));
+        }
+        if (closed) return;
+        let note = null;
+        if (!read && !skipped) note = kickError
+          ? `The AI reading didn't arrive (${kickError}). Type the details in from the photo; the reading will still attach to this ticket if it arrives later.`
+          : "The AI reading is taking longer than usual. Type the details in from the photo; the reading will still attach to this ticket if it arrives later.";
+        return stepForm(photo, read, note);
+      }
+
+      // ---- step 3: check and save ----
+      async function stepForm(photo, read, note) {
+        clear();
+        const [w, f, b] = await Promise.all([
+          supabase.from("workers").select("id,name").order("name"),
+          supabase.from("fields").select("id,name,status").order("name"),
+          supabase.from("bins").select("id,name,status").order("name"),
+        ]);
+        if (closed) return;
+        const workers = w.data || [], fields = f.data || [], bins = b.data || [];
+        const asOpts = (rows) => rows.map((x) => opt(x.id, x.name));
+        const ok = read && !read.error;
+        const g = (k) => (ok ? read[k] : null);
+        const per = BU_WEIGHT[cropFromCommodity(g("commodity")) || "Corn"];
+        const numOrNull = (v) => (v == null || v === "" || Number.isNaN(Number(v)) ? null : Number(v));
+        const ticketNoUsable = ok && g("ticket_number") && g("ticket_number_complete") !== false;
+        const netLb = numOrNull(g("net_lb"));
+        const draftHaul = {
+          departed_at: parseTicketDateTime(g("ticket_date"), g("gross_time")),
+          worker_id: (workers.find((x) => x.id === "external-driver") || {}).id || null,
+          truck: "External", trailer: "External",
+          origin_type: "bin", bin_id: null, field_id: null,
+          crop: cropFromCommodity(g("commodity")),
+          origin_status: null,
+          destination_id: ok ? matchDestinationId(g("buyer_name"), g("buyer_location")) : null,
+          destination_name: ok && !matchDestinationId(g("buyer_name"), g("buyer_location")) ? g("buyer_name") : null,
+          destination_location: ok && !matchDestinationId(g("buyer_name"), g("buyer_location")) ? g("buyer_location") : null,
+        };
+        const draftTicket = {
+          ticket_number: ticketNoUsable ? String(g("ticket_number")) : null,
+          gross_lb: numOrNull(g("gross_lb")), tare_lb: numOrNull(g("tare_lb")), net_lb: netLb,
+          net_bushels: numOrNull(g("net_bu")) ?? (netLb != null && per ? Math.round((netLb / per) * 100) / 100 : null),
+          moisture_pct: numOrNull(g("moisture_pct")), test_weight: numOrNull(g("test_weight")),
+          notes: g("handwritten_notes"),
+        };
+        const haulSec = {
+          heading: "Haul", table: "shipments", record: draftHaul,
+          fields: [
+            { key: "departed_at", label: "Departed (from the ticket)", type: "datetime", required: true },
+            selectDef("worker_id", "Driver (worker record)", asOpts(workers), { required: true }),
+            selectDef("truck", "Truck", [...TRUCK_OPTS, opt("External", "External truck")], { required: true }),
+            selectDef("trailer", "Trailer", [...TRAILER_OPTS, opt("External", "External trailer")], { required: true }),
+            { key: "truck_plate", label: "Truck plate", type: "text", plate: true },
+            { key: "trailer_plate", label: "Trailer plate", type: "text", plate: true },
+            { key: "carrier_name", label: "Trucking company", type: "text", carrier: true },
+            selectDef("origin_type", "Hauled from", [opt("bin", "A bin"), opt("field", "A field")], { required: true }),
+            selectDef("bin_id", "Bin", asOpts(bins), { allowEmpty: true }),
+            selectDef("field_id", "Field", asOpts(fields), { allowEmpty: true }),
+            selectDef("crop", "Crop", CROP_OPTS, { required: true }),
+            selectDef("origin_status", "Status of that bin / field", STATUS_OPTS, { allowEmpty: true }),
+            selectDef("destination_id", "Buyer", destinationOpts(), { allowEmpty: true }),
+            { key: "destination_name", label: "Buyer name (if not in the list)", type: "text" },
+            { key: "destination_location", label: "Buyer location (if not in the list)", type: "text" },
+          ],
+          validate: (v) => {
+            const errs = [];
+            if (v.origin_type === "bin" && !v.bin_id) errs.push("Pick the bin it was hauled from.");
+            if (v.origin_type === "bin" && v.field_id) errs.push("A haul from a bin can't also have a field — clear the field.");
+            if (v.origin_type === "field" && !v.field_id) errs.push("Pick the field it was hauled from.");
+            if (v.origin_type === "field" && v.bin_id) errs.push("A haul from a field can't also have a bin — clear the bin.");
+            if (!v.origin_status) errs.push("Choose the status of that bin or field (organic, transitional or conventional). It fills in by itself once the bin or field is picked.");
+            if (!v.destination_id && !v.destination_name) errs.push("Pick the buyer, or type their name.");
+            return errs;
+          },
+        };
+        const ticketSec = {
+          heading: "Scale ticket", table: "shipment_tickets", record: draftTicket,
+          fields: [
+            { key: "ticket_number", label: "Ticket number", type: "text", required: true },
+            { key: "gross_lb", label: "Gross (lb)", type: "number", min: 0 },
+            { key: "tare_lb", label: "Tare (lb)", type: "number", min: 0 },
+            { key: "net_lb", label: "Net (lb)", type: "number", min: 0, required: true },
+            { key: "net_bushels", label: "Net bushels", type: "number", min: 0, required: true, hint: (vals) => {
+              const p = BU_WEIGHT[vals.__crop] ;
+              return vals.net_lb != null && p ? `Net pounds ÷ ${p} = ${(vals.net_lb / p).toLocaleString(undefined, { maximumFractionDigits: 2 })} bu` : "";
+            } },
+            { key: "moisture_pct", label: "Moisture %", type: "number", min: 0, max: 100 },
+            { key: "test_weight", label: "Test weight", type: "number", min: 0, max: 100 },
+            { key: "notes", label: "Notes", type: "textarea", wide: true },
+          ],
+          validate: (v) => (v.net_bushels != null && v.net_bushels <= 0 ? ["Net bushels must be more than zero."] : []),
+        };
+
+        // what the AI said, next to the photo
+        const top = mk("div", { style: "display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start;margin-bottom:10px;" });
+        const img = mk("img", { src: photo.url, alt: "The ticket photo", "data-role": "scan-photo", style: "max-width:220px;max-height:260px;border-radius:8px;border:1px solid var(--border);cursor:zoom-in;" });
+        img.addEventListener("click", () => window.open(photo.url, "_blank", "noopener"));
+        top.appendChild(img);
+        const notes = mk("div", { "data-role": "scan-ai-notes", style: "flex:1;min-width:220px;font-size:12px;display:flex;flex-direction:column;gap:6px;" });
+        if (note) notes.appendChild(mk("div", { className: "modal-note", style: "margin:0;", text: note }));
+        if (read && read.error) notes.appendChild(mk("div", { className: "modal-error", style: "margin:0;", text: `The AI couldn't read this photo (${read.error}). Type the details in from the photo.` }));
+        if (ok) {
+          notes.appendChild(mk("div", { text: `AI read: ${[g("buyer_name"), g("buyer_location")].filter(Boolean).join(", ") || "buyer not legible"} · ticket ${g("ticket_number") || "not legible"}${g("ticket_number_complete") === false ? " (partly hidden — type the full number)" : ""}` }));
+          const chk = read.arithmetic_check;
+          if (chk && chk !== "pass") notes.appendChild(mk("div", { className: "modal-error", style: "margin:0;", "data-role": "scan-arith", text: "The ticket's own numbers don't agree: " + String(chk).replace(/^fail:\s*/, "") }));
+          else if (chk === "pass") notes.appendChild(mk("div", { "data-role": "scan-arith", text: "The ticket's own numbers add up ✓" }));
+          (Array.isArray(read.legibility_issues) ? read.legibility_issues : []).forEach((i) =>
+            notes.appendChild(mk("div", { className: "modal-note", style: "margin:0;", text: "Hard to read — " + (typeof i === "string" ? i : `${i.field}: ${i.note}`) })));
+          if (!draftHaul.departed_at && g("ticket_date")) notes.appendChild(mk("div", { className: "modal-note", style: "margin:0;", text: `Couldn't turn "${g("ticket_date")} ${g("gross_time") || ""}" into a date and time — set it yourself.` }));
+        } else if (!note && !(read && read.error)) {
+          notes.appendChild(mk("div", { text: "Typing it in by hand. The photo is saved with the ticket." }));
+        }
+        notes.appendChild(mk("div", { className: "meta", text: "Check every number against the photo before saving." }));
+        top.appendChild(notes);
+        stage.appendChild(top);
+
+        // the two form sections (same look as the edit window)
+        const sxs = [haulSec, ticketSec].map((sec) => {
+          const wrap = mk("div", { "data-section": sec.table });
+          wrap.appendChild(mk("h3", { text: sec.heading }));
+          const grid = mk("div", { style: "display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;" });
+          const inputs = {}, hints = {};
+          sec.fields.forEach((def) => {
+            const label = mk("label");
+            if (def.wide) label.style.gridColumn = "1 / -1";
+            const text = mk("span", { text: def.label + (def.required ? " *" : "") });
+            const input = buildFieldInput(def, sec.record[def.key]);
+            inputs[def.key] = input;
+            label.appendChild(text); label.appendChild(input);
+            if (def.hint) { const h = mk("span", { className: "field-hint", "data-hint": def.key }); hints[def.key] = { el: h, def }; label.appendChild(h); }
+            grid.appendChild(label);
+          });
+          wrap.appendChild(grid);
+          stage.appendChild(wrap);
+          return { sec, inputs, hints };
+        });
+        const [hx, tx] = sxs;
+        const refreshHints = () => Object.values(tx.hints).forEach(({ el, def }) => { el.textContent = def.hint({ ...collectSection(tx).values, __crop: hx.inputs.crop.value }); });
+        Object.values(tx.inputs).concat([hx.inputs.crop]).forEach((i) => i.addEventListener("input", refreshHints));
+        refreshHints();
+        // picking the bin or field fills in its status
+        const syncStatus = () => {
+          const isBin = hx.inputs.origin_type.value === "bin";
+          const id = (isBin ? hx.inputs.bin_id : hx.inputs.field_id).value;
+          const row = (isBin ? bins : fields).find((x) => x.id === id);
+          if (row && row.status) hx.inputs.origin_status.value = row.status;
+        };
+        ["origin_type", "bin_id", "field_id"].forEach((k) => hx.inputs[k].addEventListener("change", syncStatus));
+
+        const msg = mk("div", { "data-role": "scan-message" });
+        stage.appendChild(msg);
+        const say = (text, kind) => { msg.className = kind === "error" ? "modal-error" : "modal-note"; msg.textContent = text; };
+        const save = button("Save haul", "scan-save", "gold", async () => {
+          say("");
+          const results = sxs.map((sx) => ({ sx, ...collectSection(sx) }));
+          const problems = results.flatMap((r) => r.errors.map((e) => `${r.sx.sec.heading}: ${e}`));
+          if (problems.length) return say(problems.join("\n"), "error");
+          const hv = results[0].values, tv = results[1].values;
+          if (tv.gross_lb != null && tv.tare_lb != null && Math.abs(tv.gross_lb - tv.tare_lb - tv.net_lb) > 1
+              && !window.confirm(`Gross − tare is ${(tv.gross_lb - tv.tare_lb).toLocaleString()} lb, but net is ${tv.net_lb.toLocaleString()} lb. Save anyway?`)) return;
+          save.disabled = true;
+          // the same ticket number already on file?
+          const dup = await supabase.from("shipment_tickets").select("client_id").eq("ticket_number", tv.ticket_number).limit(1);
+          if (dup.data && dup.data.length && !window.confirm(`Ticket ${tv.ticket_number} is already entered. Enter it again anyway?`)) { save.disabled = false; return; }
+          const { data: sess } = await supabase.auth.getSession();
+          const email = sess?.session?.user?.email || "unknown";
+          const bin = bins.find((x) => x.id === hv.bin_id);
+          const shipment = {
+            client_id: photo.shipId, departed_at: hv.departed_at, worker_id: hv.worker_id, truck: hv.truck, trailer: hv.trailer,
+            origin_type: hv.origin_type, bin_id: hv.bin_id, field_id: hv.field_id, crop: hv.crop, origin_status: hv.origin_status,
+            bin_status: hv.origin_type === "bin" ? (bin && bin.status) || hv.origin_status : null,
+            destination_id: hv.destination_id,
+            destination_name: hv.destination_id ? null : hv.destination_name,
+            destination_location: hv.destination_id ? null : hv.destination_location,
+            est_bushels: tv.net_bushels, est_weight_lb: tv.net_lb, device_id: `owner-scan:${email}`,
+          };
+          ["truck_plate", "trailer_plate", "carrier_name"].forEach((k) => { if (hv[k]) shipment[k] = hv[k]; });
+          const ticket = {
+            client_id: photo.ticketId, shipment_client_id: photo.shipId, created_at: new Date().toISOString(), worker_id: hv.worker_id,
+            ticket_number: tv.ticket_number, gross_lb: tv.gross_lb, tare_lb: tv.tare_lb, net_lb: tv.net_lb, net_bushels: tv.net_bushels,
+            moisture_pct: tv.moisture_pct, test_weight: tv.test_weight, photo_path: photo.path, notes: tv.notes, device_id: `owner-scan:${email}`,
+          };
+          const { error } = await supabase.rpc("owner_create_haul", { p_shipment: shipment, p_ticket: ticket });
+          if (error) {
+            save.disabled = false;
+            if (/Two-step sign-in required/i.test(error.message)) { say("NOT saved — your sign-in hasn't confirmed its authenticator code. Confirm it, then press Save again.", "error"); ensureEditSession(); }
+            else if (/could not find the function|PGRST202/i.test(error.message) || error.code === "PGRST202") say("NOT saved — entering hauls isn't set up yet. Run allow-owner-scan-entry.sql in the Supabase SQL Editor, then reload this page.", "error");
+            else say("NOT saved — " + error.message, "error");
+            return;
+          }
+          close();
+          await fetchHauls();
+          render();
+          statusLine.textContent = `Saved ✓ — haul with ticket ${tv.ticket_number} added`;
+        });
+        buttons(button("Cancel", "scan-cancel", "", close), save);
+      }
+
+      stepPick();
+      return m;
+    }
+    haulsScanBtnEl.addEventListener("click", openScanEntry);
 
     // ---- the edit log tab ----
     let editLogRows = [];
@@ -3597,7 +4098,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           <span class="legend-chip"><span class="legend-dot" style="background:var(--ai-yellow);"></span>AI read from photo</span>
         </div>
       `;
-      wrap.insertBefore(editButtonRow("Edit haul & ticket", "edit-haul", () => editHaul(r)), wrap.firstChild);
+      wrap.insertBefore(editButtonRow("Edit haul & ticket", "edit-haul", () => editHaul(r), { label: "Delete haul", role: "delete-haul", handler: () => deleteHaul(r) }), wrap.firstChild);
       if (plateLine(r.truckPlate, r.trailerPlate, r.carrierName)) {
         const vehicle = document.createElement("div");
         vehicle.setAttribute("data-role", "haul-vehicle");
