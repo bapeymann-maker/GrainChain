@@ -308,8 +308,8 @@
 
     // TODO: same Project URL / anon key as index.html.
     const supabase = createClient(
-      "https://ewzlxjimbxwurzbjzbxw.supabase.co",
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3emx4amltYnh3dXJ6Ymp6Ynh3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3NDA4NDksImV4cCI6MjEwNTMxNjg0OX0.wJTPNqDP07_129K_90X-SOb4oji8ZENWi4S9L0xjGQk"
+      "https://YOUR-PROJECT.supabase.co",
+      "YOUR-ANON-KEY"
     );
 
     const loginView = document.getElementById("login-view");
@@ -2312,11 +2312,17 @@
               <td>${escapeHtml(affidavitConditionText(a))}</td>
               <td>${escapeHtml(affidavitCoversLabel(a, matches))}</td>
               <td>${a.hash_ok === false ? `<span class="badge badge-review" title="This record's contents no longer match the fingerprint taken when it was signed">CHANGED</span>` : `<span class="badge badge-match" title="Contents match the fingerprint taken when it was signed">Verified</span>`}</td>
-              <td><button class="small-btn" data-print-aff="${escapeHtml(a.client_id)}">View / print</button></td>
+              <td style="white-space:nowrap;"><button class="small-btn" data-print-aff="${escapeHtml(a.client_id)}">View / print</button> <button class="small-btn danger" data-delete-aff="${escapeHtml(a.client_id)}">Delete</button></td>
             </tr>`)
             .join("")}</tbody></table>`;
       root.innerHTML = html;
       wirePrintButtons(root);
+      root.querySelectorAll("[data-delete-aff]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const a = allAffidavits.find((x) => x.client_id === btn.getAttribute("data-delete-aff"));
+          if (a) deleteAffidavit(a);
+        });
+      });
       document.getElementById("affidavit-start").addEventListener("change", (e) => {
         try {
           if (e.target.value) localStorage.setItem(AFFIDAVIT_START_KEY, e.target.value);
@@ -2898,7 +2904,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
     // Every delete asks first (saying what else goes with it), needs the 2FA
     // code, runs as one all-or-nothing database function, and leaves a full
     // copy of what was removed in the Edit log. See allow-owner-deletes.sql.
-    function confirmDelete({ title, lines }) {
+    function confirmDelete({ title, lines, ack }) {
       return new Promise((resolve) => {
         const m = openModal(title);
         const body = document.createElement("div");
@@ -2917,8 +2923,20 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         cancel.className = "small-btn"; cancel.textContent = "Cancel"; cancel.setAttribute("data-role", "delete-cancel");
         const go = document.createElement("button");
         go.className = "small-btn danger-solid"; go.textContent = "Delete permanently"; go.setAttribute("data-role", "delete-confirm");
+        if (ack) {
+          // an extra "yes, I mean it" tick for records that are meant to be permanent
+          const lab = document.createElement("label");
+          lab.className = "check"; lab.style.cssText = "margin-top:10px;font-size:13px;color:var(--text);";
+          const box = document.createElement("input");
+          box.type = "checkbox"; box.setAttribute("data-role", "delete-ack");
+          const t = document.createElement("span"); t.textContent = ack;
+          lab.appendChild(box); lab.appendChild(t);
+          body.appendChild(lab);
+          go.disabled = true;
+          box.addEventListener("change", () => { go.disabled = !box.checked; });
+        }
         cancel.addEventListener("click", () => { m.close(); resolve(false); });
-        go.addEventListener("click", () => { m.close(); resolve(true); });
+        go.addEventListener("click", () => { if (go.disabled) return; m.close(); resolve(true); });
         actions.appendChild(cancel); actions.appendChild(go);
         m.box.appendChild(actions);
       });
@@ -2944,7 +2962,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const text = /Two-step sign-in required/i.test(error.message)
           ? "Your sign-in hasn't confirmed its authenticator code. Confirm it, then try again."
           : /could not find the function|PGRST202|schema cache/i.test(error.message) || error.code === "PGRST202"
-          ? "Deleting isn't set up yet. Run allow-owner-deletes.sql in the Supabase SQL Editor, then reload this page."
+          ? `Deleting isn't set up yet. Run ${rpc === "owner_delete_affidavit" ? "allow-owner-delete-affidavits.sql" : "allow-owner-deletes.sql"} in the Supabase SQL Editor, then reload this page.`
           : error.message;
         showNotice("Nothing was deleted", text, "delete-error");
         if (/authenticator code/.test(text)) ensureEditSession();
@@ -2991,6 +3009,22 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         if (settlementsLoaded) await fetchSettlements();
         render();
       });
+    }
+    async function deleteAffidavit(a) {
+      if (!(await ensureEditSession())) return;
+      const signed = a.signed_at ? new Date(a.signed_at).toLocaleString() : "?";
+      const ok = await confirmDelete({
+        title: "Delete this truck affidavit?",
+        lines: [
+          `Signed ${signed} by ${a.worker_name || a.worker_id}`,
+          `${rigText(a.truck, a.trailer)} · ${affidavitOriginLabel(a)} · ${a.origin_status}`,
+          "A signed affidavit is a compliance record and is normally permanent. Delete one only if it was a test.",
+          "The database refuses if the affidavit is attached to a haul (delete that haul first). The signature image file stays in storage.",
+        ],
+        ack: "This affidavit was a test, not a real record.",
+      });
+      if (!ok) return;
+      await performDelete("owner_delete_affidavit", { p_client_id: a.client_id }, async () => { await fetchAffidavits(); render(); });
     }
     async function deleteContract(c) {
       if (!(await ensureEditSession())) return;
@@ -3379,7 +3413,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
     // ---- the edit log tab ----
     let editLogRows = [];
     let editLogUnavailable = false;
-    const EDIT_TABLE_NAMES = { loads: "Field-to-bin load", shipments: "Haul", shipment_tickets: "Scale ticket", contracts: "Contract", contract_tickets: "Contract allocation", settlements: "Settlement", settlement_tickets: "Settlement load" };
+    const EDIT_TABLE_NAMES = { loads: "Field-to-bin load", shipments: "Haul", shipment_tickets: "Scale ticket", contracts: "Contract", contract_tickets: "Contract allocation", settlements: "Settlement", settlement_tickets: "Settlement load", truck_affidavits: "Truck affidavit" };
     async function fetchEditLog() {
       const { data, error } = await supabase.from("data_edit_log").select("*").order("edited_at", { ascending: false }).limit(300);
       if (error) { editLogUnavailable = true; editLogRows = []; return; }
@@ -3399,7 +3433,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const intro = document.createElement("div");
       intro.className = "meta";
       intro.style.marginBottom = "10px";
-      intro.textContent = `Every change made to loads, hauls, tickets, contracts and settlements — newest first (the latest ${editLogRows.length}). This log can't be edited or deleted by anyone.`;
+      intro.textContent = `Every change made to loads, hauls, tickets, contracts, settlements and truck affidavits — newest first (the latest ${editLogRows.length}). This log can't be edited or deleted by anyone.`;
       root.appendChild(intro);
       if (editLogRows.length === 0) {
         const d = document.createElement("div");
