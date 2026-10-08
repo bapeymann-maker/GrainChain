@@ -79,6 +79,29 @@
     .ticket-pick-row:last-child { border-bottom: none; }
     .small-btn { font-size: 12px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
     .small-btn.gold { border-color: var(--gold); background: var(--gold-dark); color: var(--gold); }
+    .small-btn:disabled { opacity: .5; cursor: default; }
+    /* two-step sign-in */
+    #mfa-view { display: none; flex-direction: column; gap: 14px; max-width: 360px; margin: 80px auto; padding: 0 20px; }
+    #mfa-view.visible { display: flex; }
+    #mfa-view input { font-size: 24px; letter-spacing: 8px; text-align: center; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+    #mfa-view button.primary { font-size: 16px; font-weight: 700; padding: 12px; border-radius: 8px; border: 1px solid var(--gold); background: var(--gold-dark); color: var(--gold); cursor: pointer; }
+    #mfa-view button.link { background: none; border: none; color: var(--text-muted); font-size: 13px; text-decoration: underline; cursor: pointer; }
+    #mfa-error { color: var(--danger); font-size: 13px; min-height: 16px; }
+    #mfa-banner { display: none; align-items: center; gap: 12px; flex-wrap: wrap; background: var(--gold-dark); border: 1px solid var(--gold); color: var(--gold); border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px; }
+    /* editing and other pop-up windows */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: flex-start; justify-content: center; padding: 32px 16px; overflow-y: auto; z-index: 1000; }
+    .modal-box { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; width: 100%; max-width: 780px; }
+    .modal-box h2 { margin: 0 0 12px; font-size: 18px; color: var(--gold); }
+    .modal-box h3 { margin: 18px 0 8px; font-size: 14px; color: var(--text); border-top: 1px solid var(--border); padding-top: 12px; }
+    .modal-box h3:first-of-type { border-top: none; padding-top: 0; margin-top: 4px; }
+    .modal-box .field-hint { font-size: 11px; color: var(--text-muted); }
+    .modal-box label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
+    .modal-box label.check { flex-direction: row; align-items: center; gap: 8px; }
+    .modal-box input, .modal-box select, .modal-box textarea { font-size: 13px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel-alt); color: var(--text); font-family: inherit; }
+    .modal-box input[type=checkbox] { width: 18px; height: 18px; padding: 0; }
+    .modal-error { color: var(--danger); font-size: 13px; margin-top: 12px; white-space: pre-line; }
+    .modal-note { color: var(--gold); font-size: 13px; margin-top: 12px; white-space: pre-line; }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
     .badge-paid { color: var(--organic); background: var(--organic-dark); }
     .badge-unpaid { color: #E2812B; background: #3A250D; }
     .dash-section-title { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
@@ -110,10 +133,23 @@
     <button id="login-btn">Log in</button>
   </div>
 
+  <div id="mfa-view">
+    <h1 style="font-size:22px;margin:0;">Two-step sign-in</h1>
+    <div style="font-size:13px;color:var(--text-muted);">Open your authenticator app and enter the 6-digit code for GrainChain.</div>
+    <input id="mfa-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••" />
+    <div id="mfa-error"></div>
+    <button id="mfa-verify-btn" class="primary">Verify</button>
+    <button id="mfa-signout-btn" class="link">Sign out</button>
+  </div>
+
   <div id="log-view">
     <div class="topbar">
       <h1 style="font-size:22px;margin:0;">GrainChain — Load Log</h1>
-      <button id="logout-btn">Log out</button>
+      <span><button id="security-btn">Security</button> <button id="logout-btn">Log out</button></span>
+    </div>
+    <div id="mfa-banner" data-role="mfa-banner">
+      <span>Two-step sign-in is off. Until it's set up you can't edit data — and anyone who learns your password could sign in as you.</span>
+      <button id="mfa-banner-setup" class="small-btn gold">Set up now</button>
     </div>
     <div id="filter-row">
       <input id="search" type="text" placeholder="Search field, worker, bin..." style="flex:1;min-width:200px;" />
@@ -132,6 +168,7 @@
       <button id="view-harvest-btn" class="view-btn">Harvest</button>
       <button id="view-affidavits-btn" class="view-btn">Affidavits</button>
       <button id="view-rigs-btn" class="view-btn">Rigs</button>
+      <button id="view-editlog-btn" class="view-btn">Edit log</button>
       <button id="view-loads-btn" class="view-btn active-view">Field to Bin</button>
       <button id="view-field-btn" class="view-btn">By Field</button>
       <button id="view-hauls-btn" class="view-btn">Hauls &amp; Tickets</button>
@@ -155,6 +192,7 @@
             <th data-sort="test_weight">Test Wt</th>
             <th data-sort="bin">Bin</th>
             <th title="Clean-truck affidavit, for organic and transitional loads">Affidavit</th>
+            <th></th>
           </tr>
         </thead>
         <tbody id="rows"></tbody>
@@ -255,6 +293,10 @@
       <div id="rigs-view" style="display:none;">
         <div id="rigs-content"></div>
       </div>
+
+      <div id="editlog-view" style="display:none;">
+        <div id="editlog-content"></div>
+      </div>
     </div>
   </div>
 
@@ -272,6 +314,8 @@
     const loginBtn = document.getElementById("login-btn");
     const logoutBtn = document.getElementById("logout-btn");
     const loginError = document.getElementById("login-error");
+    const mfaView = document.getElementById("mfa-view");
+    const mfaBanner = document.getElementById("mfa-banner");
     const statusLine = document.getElementById("status-line");
     const rowsEl = document.getElementById("rows");
     const fieldRowsEl = document.getElementById("field-rows");
@@ -288,10 +332,12 @@
     const viewHarvestBtn = document.getElementById("view-harvest-btn");
     const viewAffidavitsBtn = document.getElementById("view-affidavits-btn");
     const viewRigsBtn = document.getElementById("view-rigs-btn");
+    const viewEditLogBtn = document.getElementById("view-editlog-btn");
     const dashboardView = document.getElementById("dashboard-view");
     const harvestView = document.getElementById("harvest-view");
     const affidavitsView = document.getElementById("affidavits-view");
     const rigsView = document.getElementById("rigs-view");
+    const editLogView = document.getElementById("editlog-view");
     const dashContentEl = document.getElementById("dash-content");
     const contractsView = document.getElementById("contracts-view");
     const settlementsView = document.getElementById("settlements-view");
@@ -400,11 +446,23 @@
 
     function showLogin() {
       loginView.classList.remove("hidden");
+      mfaView.classList.remove("visible");
       logView.classList.remove("visible");
+    }
+    function showMfaChallenge() {
+      loginView.classList.add("hidden");
+      logView.classList.remove("visible");
+      mfaView.classList.add("visible");
+      document.getElementById("mfa-error").textContent = "";
+      const box = document.getElementById("mfa-code");
+      box.value = "";
+      box.focus();
     }
     function showLog() {
       loginView.classList.add("hidden");
+      mfaView.classList.remove("visible");
       logView.classList.add("visible");
+      updateMfaBanner();
       fetchLoads();
       // Affidavit status feeds a column on this very table, so start loading
       // it now rather than waiting for a visit to the Affidavits tab.
@@ -420,13 +478,270 @@
         loginError.textContent = error.message;
         return;
       }
-      showLog();
+      await proceedAfterAuth();
     });
 
     logoutBtn.addEventListener("click", async () => {
       await supabase.auth.signOut();
       showLogin();
     });
+
+    // =====================================================================
+    // Two-step sign-in (an authenticator app's 6-digit code)
+    // =====================================================================
+    // A password alone gets a session at level "aal1". Entering the code lifts
+    // it to "aal2". The page needs aal2 to be used at all once an authenticator
+    // is set up — and the DATABASE refuses every change from an aal1 session
+    // (require-2fa-for-edits.sql), so skipping this screen gains nothing.
+    async function mfaLevels() {
+      try {
+        const { data, error } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+        return error ? null : data; // { currentLevel, nextLevel }
+      } catch { return null; }
+    }
+    // After a password sign-in, or when a saved session is restored on reload.
+    async function proceedAfterAuth() {
+      const lv = await mfaLevels();
+      if (lv && lv.nextLevel === "aal2" && lv.currentLevel !== "aal2") { showMfaChallenge(); return; }
+      showLog();
+    }
+    async function verifiedFactors() {
+      const { data, error } = await supabase.auth.mfa.listFactors();
+      if (error) throw error;
+      return (data && data.totp) || []; // verified authenticator apps only
+    }
+    // Check a 6-digit code against the account's authenticator.
+    async function confirmMfaCode(code, factorId = null) {
+      if (!/^\d{6}$/.test(code)) throw new Error("Enter the 6-digit code from your authenticator app.");
+      let id = factorId;
+      if (!id) {
+        const factors = await verifiedFactors();
+        if (!factors.length) throw new Error("No authenticator is set up for this account.");
+        id = factors[0].id;
+      }
+      const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId: id, code });
+      if (error) throw new Error(/invalid|expired/i.test(error.message) ? "That code didn't work. Check the code and try again." : error.message);
+    }
+    async function submitMfaChallenge() {
+      const err = document.getElementById("mfa-error");
+      err.textContent = "";
+      try {
+        await confirmMfaCode(document.getElementById("mfa-code").value.trim());
+        showLog();
+      } catch (e) {
+        err.textContent = e.message;
+        document.getElementById("mfa-code").select();
+      }
+    }
+    document.getElementById("mfa-verify-btn").addEventListener("click", submitMfaChallenge);
+    document.getElementById("mfa-code").addEventListener("keydown", (e) => { if (e.key === "Enter") submitMfaChallenge(); });
+    document.getElementById("mfa-signout-btn").addEventListener("click", async () => { await supabase.auth.signOut(); showLogin(); });
+
+    async function updateMfaBanner() {
+      try {
+        mfaBanner.style.display = (await verifiedFactors()).length > 0 ? "none" : "flex";
+      } catch { mfaBanner.style.display = "none"; }
+    }
+    document.getElementById("mfa-banner-setup").addEventListener("click", openSecurity);
+    document.getElementById("security-btn").addEventListener("click", openSecurity);
+
+    // A pop-up window. It is only closed by its own buttons, so a stray click
+    // never throws away something being edited.
+    function openModal(title) {
+      const overlay = document.createElement("div");
+      overlay.className = "modal-overlay";
+      overlay.setAttribute("data-role", "modal");
+      const box = document.createElement("div");
+      box.className = "modal-box";
+      const heading = document.createElement("h2");
+      heading.textContent = title;
+      box.appendChild(heading);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+      return { box, close: () => overlay.remove() };
+    }
+
+    async function openSecurity() {
+      const m = openModal("Security — two-step sign-in");
+      const body = document.createElement("div");
+      body.setAttribute("data-role", "security-body");
+      m.box.appendChild(body);
+      const actions = document.createElement("div");
+      actions.className = "modal-actions";
+      const done = document.createElement("button");
+      done.className = "small-btn";
+      done.textContent = "Close";
+      done.addEventListener("click", m.close);
+      actions.appendChild(done);
+      m.box.appendChild(actions);
+
+      const say = (text, kind) => {
+        let line = body.querySelector("[data-role='security-message']");
+        if (!line) { line = document.createElement("div"); line.setAttribute("data-role", "security-message"); body.appendChild(line); }
+        line.className = kind === "error" ? "modal-error" : "modal-note";
+        line.textContent = text;
+      };
+
+      async function refresh() {
+        body.innerHTML = "";
+        let factors;
+        try { factors = await verifiedFactors(); } catch (e) { say("Couldn't load your security settings: " + e.message, "error"); return; }
+        const status = document.createElement("div");
+        status.setAttribute("data-role", "security-status");
+        status.style.cssText = "font-size:14px;margin-bottom:10px;";
+        status.textContent = factors.length
+          ? `Two-step sign-in is ON — ${factors.length} authenticator${factors.length === 1 ? "" : "s"} set up.`
+          : "Two-step sign-in is OFF. Set up an authenticator app below. It's free: Google Authenticator, Microsoft Authenticator, Authy, 1Password and similar all work.";
+        body.appendChild(status);
+        factors.forEach((f) => {
+          const row = document.createElement("div");
+          row.setAttribute("data-role", "factor-row");
+          row.style.cssText = "display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;";
+          const name = document.createElement("span");
+          name.style.flex = "1";
+          name.textContent = `${f.friendly_name || "Authenticator"}${f.created_at ? " — added " + new Date(f.created_at).toLocaleDateString() : ""}`;
+          const rm = document.createElement("button");
+          rm.className = "small-btn";
+          rm.textContent = "Remove";
+          rm.addEventListener("click", async () => {
+            const last = factors.length === 1;
+            const warning = last
+              ? "This is your ONLY authenticator. If you remove it, two-step sign-in is off and you won't be able to edit anything until you set one up again. Remove it?"
+              : "Remove this authenticator? You'll still be able to sign in with your other one.";
+            if (!window.confirm(warning)) return;
+            const { error } = await supabase.auth.mfa.unenroll({ factorId: f.id });
+            if (error) { say("Couldn't remove it: " + error.message, "error"); return; }
+            await refresh();
+            say("Removed.");
+            updateMfaBanner();
+          });
+          row.appendChild(name);
+          row.appendChild(rm);
+          body.appendChild(row);
+        });
+        const add = document.createElement("button");
+        add.className = "small-btn gold";
+        add.setAttribute("data-role", "add-authenticator");
+        add.style.marginTop = "12px";
+        add.textContent = factors.length ? "Add another authenticator" : "Set up an authenticator";
+        add.addEventListener("click", () => startEnroll(factors.length > 0));
+        body.appendChild(add);
+        if (factors.length === 1) {
+          const tip = document.createElement("div");
+          tip.className = "field-hint";
+          tip.style.marginTop = "8px";
+          tip.textContent = "Tip: add a second authenticator (another phone, or the same code in a second app). If you lose the only one you have, you're locked out of editing until it's reset from the Supabase dashboard.";
+          body.appendChild(tip);
+        }
+      }
+
+      async function startEnroll(hasOthers) {
+        body.innerHTML = "";
+        try {
+          // an abandoned, never-confirmed attempt would otherwise block a new one
+          const { data: all } = await supabase.auth.mfa.listFactors();
+          for (const f of ((all && all.all) || []).filter((x) => x.status === "unverified")) await supabase.auth.mfa.unenroll({ factorId: f.id });
+        } catch { /* nothing to clear */ }
+        const label = `Authenticator ${new Date().toISOString().slice(0, 10)} ${Math.random().toString(36).slice(2, 5)}`;
+        const { data, error } = await supabase.auth.mfa.enroll({ factorType: "totp", friendlyName: label });
+        if (error) { await refresh(); say("Couldn't start setup: " + error.message, "error"); return; }
+        const intro = document.createElement("div");
+        intro.style.cssText = "font-size:13px;margin-bottom:10px;";
+        intro.textContent = "1. In your authenticator app, add an account by scanning this code (or typing the key). 2. Enter the 6-digit code the app shows.";
+        const qr = document.createElement("img");
+        qr.setAttribute("data-role", "mfa-qr");
+        qr.alt = "QR code for your authenticator app";
+        qr.src = data.totp.qr_code;
+        qr.style.cssText = "width:180px;height:180px;background:#fff;padding:8px;border-radius:8px;display:block;margin-bottom:8px;";
+        const secret = document.createElement("div");
+        secret.setAttribute("data-role", "mfa-secret");
+        secret.style.cssText = "font-family:monospace;font-size:13px;margin-bottom:12px;word-break:break-all;";
+        secret.textContent = `Key: ${data.totp.secret}`;
+        const code = document.createElement("input");
+        code.setAttribute("data-role", "mfa-enroll-code");
+        code.type = "text"; code.inputMode = "numeric"; code.maxLength = 6; code.placeholder = "6-digit code";
+        code.style.cssText = "width:160px;";
+        const go = document.createElement("button");
+        go.className = "small-btn gold";
+        go.setAttribute("data-role", "mfa-enroll-verify");
+        go.style.marginLeft = "8px";
+        go.textContent = "Turn on";
+        go.addEventListener("click", async () => {
+          try {
+            await confirmMfaCode(code.value.trim(), data.id);
+            await refresh();
+            say(hasOthers ? "Added." : "Two-step sign-in is now ON. From now on you'll be asked for a code each time you sign in.");
+            updateMfaBanner();
+          } catch (e) { say(e.message, "error"); }
+        });
+        const cancel = document.createElement("button");
+        cancel.className = "small-btn";
+        cancel.style.marginLeft = "8px";
+        cancel.textContent = "Cancel";
+        cancel.addEventListener("click", async () => { await supabase.auth.mfa.unenroll({ factorId: data.id }); await refresh(); });
+        body.appendChild(intro); body.appendChild(qr); body.appendChild(secret); body.appendChild(code); body.appendChild(go); body.appendChild(cancel);
+      }
+      await refresh();
+    }
+
+    // Before editing: make sure THIS session has entered its code. If an
+    // authenticator exists but this session hasn't confirmed it, ask now.
+    // (The database enforces it regardless; this just makes it friendly.)
+    function askForMfaCode() {
+      return new Promise((resolve) => {
+        const m = openModal("Confirm it's you");
+        const note = document.createElement("div");
+        note.style.cssText = "font-size:13px;margin-bottom:10px;";
+        note.textContent = "Enter the 6-digit code from your authenticator app to edit data.";
+        const code = document.createElement("input");
+        code.setAttribute("data-role", "mfa-step-up-code");
+        code.type = "text"; code.inputMode = "numeric"; code.maxLength = 6; code.placeholder = "6-digit code";
+        code.style.cssText = "width:160px;";
+        const err = document.createElement("div");
+        err.className = "modal-error";
+        err.setAttribute("data-role", "mfa-step-up-error");
+        const actions = document.createElement("div");
+        actions.className = "modal-actions";
+        const cancel = document.createElement("button");
+        cancel.className = "small-btn"; cancel.textContent = "Cancel";
+        cancel.addEventListener("click", () => { m.close(); resolve(false); });
+        const ok = document.createElement("button");
+        ok.className = "small-btn gold"; ok.textContent = "Confirm";
+        ok.setAttribute("data-role", "mfa-step-up-confirm");
+        const attempt = async () => {
+          try { await confirmMfaCode(code.value.trim()); m.close(); resolve(true); }
+          catch (e) { err.textContent = e.message; }
+        };
+        ok.addEventListener("click", attempt);
+        code.addEventListener("keydown", (e) => { if (e.key === "Enter") attempt(); });
+        actions.appendChild(cancel); actions.appendChild(ok);
+        [note, code, err, actions].forEach((x) => m.box.appendChild(x));
+        code.focus();
+      });
+    }
+    async function ensureEditSession() {
+      const lv = await mfaLevels();
+      if (lv && lv.currentLevel === "aal2") return true;
+      if (lv && lv.nextLevel === "aal2") return askForMfaCode();
+      // no authenticator at all
+      const m = openModal("Set up two-step sign-in first");
+      const msg = document.createElement("div");
+      msg.setAttribute("data-role", "mfa-required-notice");
+      msg.style.cssText = "font-size:13px;";
+      msg.textContent = "Editing data needs two-step sign-in, so a password on its own can never change your records. It takes a minute and it's free.";
+      const actions = document.createElement("div");
+      actions.className = "modal-actions";
+      const later = document.createElement("button");
+      later.className = "small-btn"; later.textContent = "Not now";
+      later.addEventListener("click", m.close);
+      const setup = document.createElement("button");
+      setup.className = "small-btn gold"; setup.textContent = "Set it up";
+      setup.setAttribute("data-role", "mfa-required-setup");
+      setup.addEventListener("click", () => { m.close(); openSecurity(); });
+      actions.appendChild(later); actions.appendChild(setup);
+      m.box.appendChild(msg); m.box.appendChild(actions);
+      return false;
+    }
 
     refreshBtn.addEventListener("click", fetchLoads);
     searchEl.addEventListener("input", render);
@@ -435,8 +750,8 @@
     haulsCsvBtnEl.addEventListener("click", downloadHaulsCsv);
     haulsDiffOnlyEl.addEventListener("change", render);
 
-    const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn, dashboard: viewDashboardBtn, harvest: viewHarvestBtn, affidavits: viewAffidavitsBtn, rigs: viewRigsBtn };
-    const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView, dashboard: dashboardView, harvest: harvestView, affidavits: affidavitsView, rigs: rigsView };
+    const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn, dashboard: viewDashboardBtn, harvest: viewHarvestBtn, affidavits: viewAffidavitsBtn, rigs: viewRigsBtn, editlog: viewEditLogBtn };
+    const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView, dashboard: dashboardView, harvest: harvestView, affidavits: affidavitsView, rigs: rigsView, editlog: editLogView };
 
     async function ensureContracts() {
       if (!contractsLoaded) { await ensureDestinations(); await ensureHauls(); await fetchContracts(); }
@@ -467,6 +782,7 @@
       if (mode === "hauls" && !haulsLoaded) await fetchHauls();
       if (mode === "harvest") await ensureHarvestFields();
       if (mode === "rigs") await ensureRigs();
+      if (mode === "editlog") await fetchEditLog();
       if (mode === "hauls") await ensureAffidavits();
       if (mode === "affidavits") {
         await Promise.all([ensureLoads(), ensureHauls(), ensureAffidavits()]);
@@ -500,6 +816,7 @@
     viewHarvestBtn.addEventListener("click", () => switchView("harvest"));
     viewAffidavitsBtn.addEventListener("click", () => switchView("affidavits"));
     viewRigsBtn.addEventListener("click", () => switchView("rigs"));
+    viewEditLogBtn.addEventListener("click", () => switchView("editlog"));
 
     document.querySelectorAll("th[data-hsort]").forEach((th) => {
       th.addEventListener("click", () => {
@@ -574,6 +891,7 @@
         moisture_raw: l.moisture_pct,
         test_weight_raw: l.test_weight,
         crop_raw: l.crop || l.fields?.crop || null,
+        raw: l, // the database row itself, for the editor
       }));
       statusLine.textContent = `${allLoads.length} load${allLoads.length === 1 ? "" : "s"}`;
       render();
@@ -605,6 +923,8 @@
         renderAffidavits();
       } else if (viewMode === "rigs") {
         renderRigs();
+      } else if (viewMode === "editlog") {
+        renderEditLog();
       }
     }
 
@@ -636,10 +956,17 @@
           <td>${escapeHtml(r.test_weight)}</td>
           <td>${escapeHtml(r.bin)}</td>
           <td>${loadAffidavitCell(r, affMatches)}</td>
+          <td><button class="small-btn" data-edit-load="${escapeHtml(String(r.loadId))}">Edit</button></td>
         `;
         rowsEl.appendChild(tr);
       });
       wirePrintButtons(rowsEl);
+      rowsEl.querySelectorAll("[data-edit-load]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const row = allLoads.find((x) => String(x.loadId) === btn.getAttribute("data-edit-load"));
+          if (row) editLoad(row.raw);
+        });
+      });
     }
 
     function renderFieldSummary(rows) {
@@ -782,6 +1109,7 @@
           // Full raw records, for the expanded field-by-field detail panel.
           _ticket: ticket,
           _read: read,
+          _shipment: s,
         };
       });
       haulsLoaded = true;
@@ -1220,6 +1548,7 @@
         if (expanded) {
           const detail = document.createElement("div");
           detail.className = "item-detail";
+          detail.appendChild(editButtonRow("Edit contract", "edit-contract", () => editContract(c)));
           if (c.notes) {
             const n = document.createElement("div");
             n.className = "meta";
@@ -1420,6 +1749,7 @@
         if (expanded) {
           const detail = document.createElement("div");
           detail.className = "item-detail";
+          detail.appendChild(editButtonRow("Edit settlement", "edit-settlement", () => editSettlement(s)));
           if (s.notes) {
             const n = document.createElement("div");
             n.className = "meta";
@@ -2199,6 +2529,430 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
     }
 
     // ---------------------------------------------------------------------
+    // Editing records (loads, hauls, tickets, contracts, settlements)
+    // ---------------------------------------------------------------------
+    // One window serves them all: each record type just describes its fields.
+    // Safeguards, in the order they apply:
+    //   1. This session must have entered its authenticator code (step-up below).
+    //   2. Every value is checked here; nothing is sent if any is wrong.
+    //   3. Only the fields that actually CHANGED are sent.
+    //   4. The database refuses an edit from a session without the code, accepts
+    //      only the columns it has opened up, and records old -> new in the
+    //      permanent edit log.
+    const opt = (value, label) => ({ value, label });
+    const CROP_OPTS = ["Corn", "Soybeans", "Oats"].map((v) => opt(v, v));
+    const STATUS_OPTS = ["organic", "transitional", "conventional"].map((v) => opt(v, v[0].toUpperCase() + v.slice(1)));
+    const TRAILER_OPTS = ["U1", "U2", "U3", "U4", "U5", "U6", "U7", "U8"].map((v) => opt(v, v));
+    const TRUCK_OPTS = ["1", "2", "3", "4", "5", "6", "7", "8"].map((v) => opt(v, `Truck ${v}`));
+    const keepCurrent = (list, current) =>
+      current != null && current !== "" && !list.some((o) => String(o.value) === String(current)) ? [...list, opt(current, String(current))] : list;
+    const BU_WEIGHT = { Corn: 56, Soybeans: 60, Oats: 32 };
+
+    async function getEditLookups() {
+      const [w, f, b, p] = await Promise.all([
+        supabase.from("workers").select("id, name").order("name"),
+        supabase.from("fields").select("id, name").order("name"),
+        supabase.from("bins").select("id, name").order("name"),
+        supabase.from("partners").select("id, name").order("name"),
+      ]);
+      const toOpts = (res) => (res.data || []).map((x) => opt(x.id, x.name));
+      return { workers: toOpts(w), fields: toOpts(f), bins: toOpts(b), partners: toOpts(p) };
+    }
+    const destinationOpts = () => allDestinations.map((d) => opt(d.id, destName(d.id)));
+    const selectDef = (key, label, list, extra = {}) => ({ key, label, type: "select", options: (cur) => keepCurrent(list, cur), ...extra });
+
+    // ---- what can be edited on each kind of record ----
+    function loadSection(raw, L) {
+      return {
+        table: "loads", pk: "client_id", record: raw,
+        fields: [
+          { key: "logged_at", label: "Date & time", type: "datetime", required: true },
+          selectDef("worker_id", "Worker", L.workers, { required: true }),
+          selectDef("field_id", "Field", L.fields, { required: true }),
+          selectDef("bin_id", "Bin", L.bins, { allowEmpty: true }),
+          selectDef("crop", "Crop", CROP_OPTS, { allowEmpty: true }),
+          selectDef("truck", "Trailer", TRAILER_OPTS, { allowEmpty: true }),
+          selectDef("truck_mode", "Load type", [opt("full", "Full load"), opt("notFull", "Not a full load"), opt("buffer", "Buffer truck")], { allowEmpty: true }),
+          { key: "bushels", label: "Bushels", type: "number", min: 0 },
+          { key: "weight_lb", label: "Weight (lb, estimated)", type: "number", min: 0 },
+          { key: "moisture_pct", label: "Moisture %", type: "number", min: 0, max: 100 },
+          { key: "test_weight", label: "Test weight", type: "number", min: 0, max: 100 },
+          { key: "is_buffer", label: "Buffer truck", type: "bool" },
+        ],
+      };
+    }
+    function haulSections(h, L) {
+      const s = h._shipment, t = h._ticket;
+      const sections = [{
+        heading: "Haul", table: "shipments", pk: "client_id", record: s,
+        fields: [
+          { key: "departed_at", label: "Departed", type: "datetime", required: true },
+          selectDef("worker_id", "Driver", L.workers, { required: true }),
+          selectDef("truck", "Truck", [...TRUCK_OPTS.map((o) => opt(o.value, o.label)), opt("External", "External truck")], { required: true }),
+          selectDef("trailer", "Trailer", [...TRAILER_OPTS, opt("External", "External trailer")], { required: true }),
+          selectDef("origin_type", "Comes from", [opt("bin", "A bin"), opt("field", "A field")], { required: true }),
+          selectDef("bin_id", "Bin", L.bins, { allowEmpty: true }),
+          selectDef("field_id", "Field", L.fields, { allowEmpty: true }),
+          selectDef("crop", "Crop", CROP_OPTS, { allowEmpty: true }),
+          selectDef("origin_status", "Status when it left", STATUS_OPTS, { allowEmpty: true }),
+          selectDef("destination_id", "Buyer", destinationOpts(), { allowEmpty: true }),
+          { key: "destination_name", label: "Buyer name (typed-in place)", type: "text" },
+          { key: "destination_location", label: "Buyer location (typed-in place)", type: "text" },
+          { key: "est_bushels", label: "Estimated bushels", type: "number", min: 0 },
+          { key: "est_weight_lb", label: "Estimated weight (lb)", type: "number", min: 0 },
+          { key: "truck_plate", label: "Truck plate", type: "text", plate: true },
+          { key: "trailer_plate", label: "Trailer plate", type: "text", plate: true },
+          { key: "carrier_name", label: "Trucking company", type: "text", carrier: true },
+          selectDef("split_partner_id", "Share-crop partner", L.partners, { allowEmpty: true, valueType: "number" }),
+          { key: "split_pct", label: "Partner's share %", type: "number", min: 0, max: 100 },
+        ],
+        validate: (v) => {
+          const errs = [];
+          if (v.origin_type === "bin" && !v.bin_id) errs.push("A haul from a bin needs a bin.");
+          if (v.origin_type === "bin" && v.field_id) errs.push("A haul from a bin can't also have a field — clear the field.");
+          if (v.origin_type === "field" && !v.field_id) errs.push("A haul from a field needs a field.");
+          if (v.origin_type === "field" && v.bin_id) errs.push("A haul from a field can't also have a bin — clear the bin.");
+          return errs;
+        },
+      }];
+      if (t) {
+        sections.push({
+          heading: "Scale ticket", table: "shipment_tickets", pk: "client_id", record: t,
+          fields: [
+            { key: "ticket_number", label: "Ticket number", type: "text" },
+            { key: "gross_lb", label: "Gross (lb)", type: "number", min: 0 },
+            { key: "tare_lb", label: "Tare (lb)", type: "number", min: 0 },
+            { key: "net_lb", label: "Net (lb)", type: "number", min: 0 },
+            { key: "net_bushels", label: "Net bushels", type: "number", min: 0, hint: (vals) => {
+              const per = BU_WEIGHT[s.crop];
+              return vals.net_lb != null && per ? `Net pounds ÷ ${per} = ${(vals.net_lb / per).toLocaleString(undefined, { maximumFractionDigits: 2 })} bu` : "";
+            } },
+            { key: "moisture_pct", label: "Moisture %", type: "number", min: 0, max: 100 },
+            { key: "test_weight", label: "Test weight", type: "number", min: 0, max: 100 },
+            { key: "notes", label: "Notes", type: "textarea", wide: true },
+          ],
+          warn: (v) => (v.gross_lb != null && v.tare_lb != null && v.net_lb != null && Math.abs(v.gross_lb - v.tare_lb - v.net_lb) > 1)
+            ? `Gross − tare is ${(v.gross_lb - v.tare_lb).toLocaleString()} lb, but net is ${v.net_lb.toLocaleString()} lb. Save anyway?` : "",
+        });
+      }
+      return sections;
+    }
+    function contractSection(cn) {
+      return {
+        table: "contracts", pk: "id", record: cn,
+        fields: [
+          selectDef("crop", "Crop", CROP_OPTS, { required: true }),
+          selectDef("sale_type", "Sale type", [opt("organic", "Organic"), opt("conventional", "Conventional"), opt("non_gmo", "Non-GMO")], { required: true }),
+          { key: "bushels", label: "Bushels", type: "number", required: true, min: 0 },
+          { key: "contract_number", label: "Contract #", type: "text" },
+          selectDef("destination_id", "Buyer", destinationOpts(), { allowEmpty: true }),
+          { key: "contract_date", label: "Contract date", type: "date" },
+          { key: "delivery_period", label: "Delivery period", type: "text" },
+          { key: "futures_price", label: "Futures price", type: "number" },
+          { key: "futures_month", label: "Futures month", type: "text" },
+          { key: "basis", label: "Basis", type: "number" },
+          { key: "cash_price", label: "Cash price", type: "number", min: 0 },
+          { key: "notes", label: "Notes", type: "textarea", wide: true },
+        ],
+        validate: (v) => (v.bushels != null && v.bushels <= 0 ? ["Bushels must be more than zero."] : []),
+        warn: (v) => (v.bushels != null && Number(cn.delivered_bushels) > v.bushels
+          ? `${Number(cn.delivered_bushels).toLocaleString()} bu are already assigned to this contract, which is more than ${v.bushels.toLocaleString()} bu. Save anyway?` : ""),
+      };
+    }
+    function settlementSection(st) {
+      return {
+        table: "settlements", pk: "id", record: st,
+        fields: [
+          selectDef("destination_id", "Buyer", destinationOpts(), { required: true }),
+          { key: "settlement_date", label: "Settlement date", type: "date" },
+          { key: "total_amount", label: "Total amount ($)", type: "number" },
+          { key: "paid", label: "Paid", type: "bool" },
+          { key: "paid_date", label: "Paid on", type: "date" },
+          { key: "notes", label: "Notes", type: "textarea", wide: true },
+        ],
+        normalize: (v) => { if (!v.paid) v.paid_date = null; },
+        validate: (v) => (st.assignments.length > 0 && v.destination_id !== st.destination_id
+          ? ["This settlement has loads on it for the old buyer. Remove them from it before changing the buyer."] : []),
+      };
+    }
+
+    // ---- the window ----
+    const toLocalInput = (iso) => {
+      if (!iso) return "";
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return "";
+      const p = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+    };
+    function buildFieldInput(def, value) {
+      let input;
+      if (def.type === "select") {
+        input = document.createElement("select");
+        if (def.allowEmpty) input.appendChild(Object.assign(document.createElement("option"), { value: "", textContent: "—" }));
+        def.options(value).forEach((o) => input.appendChild(Object.assign(document.createElement("option"), { value: String(o.value), textContent: o.label })));
+        input.value = value == null ? "" : String(value);
+      } else if (def.type === "textarea") {
+        input = document.createElement("textarea");
+        input.rows = 2;
+        input.value = value ?? "";
+      } else if (def.type === "bool") {
+        input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = !!value;
+      } else {
+        input = document.createElement("input");
+        input.type = { datetime: "datetime-local", date: "date", number: "number" }[def.type] || "text";
+        if (def.type === "number") input.step = "any";
+        input.value = def.type === "datetime" ? toLocalInput(value) : value == null ? "" : String(value);
+      }
+      input.setAttribute("data-field", def.key);
+      return input;
+    }
+    function readFieldValue(def, input) {
+      switch (def.type) {
+        case "bool": return input.checked;
+        case "number": { const s = input.value.trim(); if (s === "") return null; const n = Number(s); return Number.isFinite(n) ? n : NaN; }
+        case "datetime": { if (!input.value) return null; const d = new Date(input.value); return Number.isNaN(d.getTime()) ? NaN : d.toISOString(); }
+        case "select": { if (input.value === "") return null; return def.valueType === "number" ? Number(input.value) : input.value; }
+        case "date": return input.value || null;
+        default: { const s = input.value.trim(); return s === "" ? null : s; }
+      }
+    }
+    function fieldChanged(def, before, after) {
+      if (def.type === "bool") return !!before !== after;
+      if (def.type === "number") return (before == null || before === "") ? after !== null : after === null ? true : Number(before) !== after;
+      if (def.type === "datetime") return (before ? new Date(before).getTime() : null) !== (after ? new Date(after).getTime() : null);
+      if (def.type === "select" && def.valueType === "number") return (before == null ? null : Number(before)) !== after;
+      return ((before === "" ? null : before) ?? null) !== after;
+    }
+    function collectSection(sx) {
+      const values = {}, errors = [];
+      sx.sec.fields.forEach((def) => {
+        let v = readFieldValue(def, sx.inputs[def.key]);
+        if (typeof v === "number" && Number.isNaN(v)) { errors.push(`${def.label} isn't a valid ${def.type === "datetime" ? "date and time" : "number"}.`); return; }
+        if (def.plate && v != null) { const t = normalizePlate(v); if (!t.ok) { errors.push(`${def.label}: ${t.error}`); return; } v = t.value; }
+        if (def.carrier && v != null) { v = v.replace(/\s+/g, " "); if (v.length > 80) { errors.push(`${def.label} is too long (80 characters at most).`); return; } }
+        if (def.required && (v === null || v === "")) { errors.push(`${def.label} is required.`); return; }
+        if (def.type === "number" && v != null) {
+          if (def.min != null && v < def.min) errors.push(`${def.label} can't be below ${def.min}.`);
+          if (def.max != null && v > def.max) errors.push(`${def.label} can't be above ${def.max}.`);
+        }
+        values[def.key] = v;
+      });
+      if (sx.sec.normalize) sx.sec.normalize(values);
+      if (!errors.length && sx.sec.validate) errors.push(...sx.sec.validate(values));
+      const patch = {};
+      if (!errors.length) sx.sec.fields.forEach((def) => { if (def.key in values && fieldChanged(def, sx.sec.record[def.key], values[def.key])) patch[def.key] = values[def.key]; });
+      return { values, errors, patch };
+    }
+
+    function openEditor({ title, sections, onSaved, afterSave }) {
+      const m = openModal(title);
+      const state = sections.map((sec) => {
+        const wrap = document.createElement("div");
+        wrap.setAttribute("data-section", sec.table);
+        if (sec.heading) { const h3 = document.createElement("h3"); h3.textContent = sec.heading; wrap.appendChild(h3); }
+        const grid = document.createElement("div");
+        grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;";
+        const inputs = {};
+        const hints = {};
+        sec.fields.forEach((def) => {
+          const label = document.createElement("label");
+          if (def.type === "bool") label.className = "check";
+          if (def.wide) label.style.gridColumn = "1 / -1";
+          const text = document.createElement("span");
+          text.textContent = def.label + (def.required ? " *" : "");
+          const input = buildFieldInput(def, sec.record[def.key]);
+          inputs[def.key] = input;
+          if (def.type === "bool") { label.appendChild(input); label.appendChild(text); } else { label.appendChild(text); label.appendChild(input); }
+          if (def.hint) { const hint = document.createElement("span"); hint.className = "field-hint"; hint.setAttribute("data-hint", def.key); hints[def.key] = { el: hint, def }; label.appendChild(hint); }
+          grid.appendChild(label);
+        });
+        wrap.appendChild(grid);
+        m.box.appendChild(wrap);
+        const sx = { sec, inputs };
+        const refreshHints = () => Object.values(hints).forEach(({ el, def }) => { el.textContent = def.hint(collectSection(sx).values); });
+        if (Object.keys(hints).length) { Object.values(inputs).forEach((i) => i.addEventListener("input", refreshHints)); refreshHints(); }
+        return sx;
+      });
+      const msg = document.createElement("div");
+      msg.setAttribute("data-role", "editor-message");
+      m.box.appendChild(msg);
+      const say = (text, kind) => { msg.className = kind === "error" ? "modal-error" : "modal-note"; msg.textContent = text; };
+      const actions = document.createElement("div");
+      actions.className = "modal-actions";
+      const cancel = document.createElement("button");
+      cancel.className = "small-btn"; cancel.textContent = "Cancel"; cancel.setAttribute("data-role", "editor-cancel");
+      cancel.addEventListener("click", m.close);
+      const save = document.createElement("button");
+      save.className = "small-btn gold"; save.textContent = "Save"; save.setAttribute("data-role", "editor-save");
+      actions.appendChild(cancel); actions.appendChild(save);
+      m.box.appendChild(actions);
+
+      save.addEventListener("click", async () => {
+        say("");
+        const results = state.map((sx) => ({ sx, ...collectSection(sx) }));
+        const problems = results.flatMap((r) => r.errors.map((e) => (r.sx.sec.heading ? `${r.sx.sec.heading}: ${e}` : e)));
+        if (problems.length) { say(problems.join("\n"), "error"); return; }
+        const todo = results.filter((r) => Object.keys(r.patch).length > 0);
+        if (todo.length === 0) { m.close(); return; }
+        for (const r of todo) {
+          const warning = r.sx.sec.warn ? r.sx.sec.warn({ ...r.sx.sec.record, ...r.values }) : "";
+          if (warning && !window.confirm(warning)) return;
+        }
+        save.disabled = true;
+        const done = [];
+        for (const r of todo) {
+          const label = r.sx.sec.heading || "Record";
+          const { data, error } = await supabase.from(r.sx.sec.table).update(r.patch).eq(r.sx.sec.pk, r.sx.sec.record[r.sx.sec.pk]).select(r.sx.sec.pk);
+          let failure = null;
+          if (error) failure = /Two-step sign-in required/i.test(error.message)
+            ? "your sign-in hasn't confirmed its authenticator code. Confirm it, then press Save again."
+            : error.message;
+          else if (!data || data.length === 0) failure = "the database changed nothing. The edit permission may not be set up (run allow-owner-edits.sql), or the record no longer exists.";
+          if (failure) {
+            const saved = done.length ? `Saved: ${done.join(", ")}.\n` : "";
+            say(`${saved}NOT saved: ${label} — ${failure}`, "error");
+            save.disabled = false;
+            if (/authenticator code/.test(failure)) ensureEditSession();
+            if (done.length) await onSaved();   // what did save should show
+            return;
+          }
+          Object.assign(r.sx.sec.record, r.patch);   // a retry then only sends what's still unsaved
+          done.push(label);
+        }
+        m.close();
+        await onSaved();
+        const note = afterSave ? afterSave() : "";
+        statusLine.textContent = `Saved ✓${note ? " — " + note : ""}`;
+      });
+      return m;
+    }
+
+    // ---- the four entry points ----
+    async function editLoad(raw) {
+      if (!(await ensureEditSession())) return;
+      const L = await getEditLookups();
+      openEditor({ title: "Edit field-to-bin load", sections: [loadSection(raw, L)], onSaved: async () => { await fetchLoads(); } });
+    }
+    async function editHaul(h) {
+      if (!(await ensureEditSession())) return;
+      const L = await getEditLookups();
+      await ensureDestinations();
+      openEditor({
+        title: `Edit haul${h.ticketNumber && h.ticketNumber !== "—" ? " — ticket " + h.ticketNumber : ""}`,
+        sections: haulSections(h, L),
+        onSaved: async () => { await fetchHauls(); render(); },
+        // a ticket's bushels changing can leave its contract allocations out of step
+        afterSave: () => {
+          const now = allHauls.find((x) => x.haulId === h.haulId);
+          if (!now || !contractsLoaded) return "";
+          const sp = haulSplit(now);
+          return sp.parts.length > 0 && (sp.remaining > 0.001 || sp.allocated > sp.total + 0.001)
+            ? "check the Contracts tab: this load's contract amounts no longer match its ticket" : "";
+        },
+      });
+    }
+    async function editContract(cn) {
+      if (!(await ensureEditSession())) return;
+      await ensureDestinations();
+      openEditor({ title: "Edit contract", sections: [contractSection(cn)], onSaved: async () => { await fetchContracts(); render(); } });
+    }
+    async function editSettlement(st) {
+      if (!(await ensureEditSession())) return;
+      await ensureDestinations();
+      openEditor({ title: "Edit settlement", sections: [settlementSection(st)], onSaved: async () => { await fetchSettlements(); render(); } });
+    }
+    function editButtonRow(label, role, handler) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;justify-content:flex-end;margin-bottom:8px;";
+      const btn = document.createElement("button");
+      btn.className = "small-btn";
+      btn.textContent = label;
+      btn.setAttribute("data-role", role);
+      btn.addEventListener("click", (e) => { e.stopPropagation(); handler(); });
+      row.appendChild(btn);
+      return row;
+    }
+
+    // ---- the edit log tab ----
+    let editLogRows = [];
+    let editLogUnavailable = false;
+    const EDIT_TABLE_NAMES = { loads: "Field-to-bin load", shipments: "Haul", shipment_tickets: "Scale ticket", contracts: "Contract", contract_tickets: "Contract allocation", settlements: "Settlement", settlement_tickets: "Settlement load" };
+    async function fetchEditLog() {
+      const { data, error } = await supabase.from("data_edit_log").select("*").order("edited_at", { ascending: false }).limit(300);
+      if (error) { editLogUnavailable = true; editLogRows = []; return; }
+      editLogUnavailable = false;
+      editLogRows = data || [];
+    }
+    function renderEditLog() {
+      const root = document.getElementById("editlog-content");
+      root.innerHTML = "";
+      if (editLogUnavailable) {
+        const d = document.createElement("div");
+        d.className = "meta";
+        d.textContent = "The edit log isn't set up yet — run add-edit-audit-log.sql in the Supabase SQL Editor, then reload.";
+        root.appendChild(d);
+        return;
+      }
+      const intro = document.createElement("div");
+      intro.className = "meta";
+      intro.style.marginBottom = "10px";
+      intro.textContent = `Every change made to loads, hauls, tickets, contracts and settlements — newest first (the latest ${editLogRows.length}). This log can't be edited or deleted by anyone.`;
+      root.appendChild(intro);
+      if (editLogRows.length === 0) {
+        const d = document.createElement("div");
+        d.className = "meta";
+        d.textContent = "Nothing has been edited yet.";
+        root.appendChild(d);
+        return;
+      }
+      const showVal = (v) => (v === null || v === undefined ? "(blank)" : typeof v === "object" ? JSON.stringify(v) : String(v));
+      const table = document.createElement("table");
+      table.innerHTML = "<thead><tr><th>When</th><th>Who</th><th>What</th><th>Change</th></tr></thead>";
+      const body = document.createElement("tbody");
+      editLogRows.forEach((r) => {
+        const tr = document.createElement("tr");
+        tr.setAttribute("data-log-id", r.id);
+        const when = document.createElement("td");
+        when.textContent = new Date(r.edited_at).toLocaleString();
+        const who = document.createElement("td");
+        const name = r.db_role === "authenticated" ? r.edited_by_email || "owner login" : r.db_role === "service_role" ? "server" : "SQL editor";
+        who.textContent = name;
+        if (r.db_role === "authenticated") {
+          const badge = document.createElement("div");
+          badge.className = "meta";
+          badge.setAttribute("data-role", "log-2fa");
+          badge.textContent = r.aal === "aal2" ? "✓ 2-step" : "⚠ password only";
+          who.appendChild(badge);
+        }
+        const what = document.createElement("td");
+        what.textContent = `${r.action === "DELETE" ? "Deleted" : "Edited"} — ${EDIT_TABLE_NAMES[r.table_name] || r.table_name}`;
+        const ref = document.createElement("div");
+        ref.className = "meta";
+        ref.textContent = String(r.row_ref).slice(0, 8);
+        what.appendChild(ref);
+        const change = document.createElement("td");
+        const ch = r.changes || {};
+        if (r.action === "DELETE") {
+          const keys = Object.keys(ch).filter((k) => ch[k] !== null && !["id", "client_id", "created_at", "device_id", "uploaded_at"].includes(k)).slice(0, 8);
+          change.textContent = keys.map((k) => `${k}: ${showVal(ch[k])}`).join(" · ") || "(whole record removed)";
+        } else {
+          Object.keys(ch).forEach((k) => {
+            const line = document.createElement("div");
+            line.setAttribute("data-role", "log-change");
+            line.textContent = `${k}: ${showVal(ch[k].old)} → ${showVal(ch[k].new)}`;
+            change.appendChild(line);
+          });
+        }
+        [when, who, what, change].forEach((td) => tr.appendChild(td));
+        body.appendChild(tr);
+      });
+      table.appendChild(body);
+      root.appendChild(table);
+    }
+
+    // ---------------------------------------------------------------------
     // Harvest tracker
     // ---------------------------------------------------------------------
     const OPERATIONS = ["Ufer Farms Partnership", "Organic Southern Operations", "Organic Northern Operations", "LB Pork"];
@@ -2843,6 +3597,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           <span class="legend-chip"><span class="legend-dot" style="background:var(--ai-yellow);"></span>AI read from photo</span>
         </div>
       `;
+      wrap.insertBefore(editButtonRow("Edit haul & ticket", "edit-haul", () => editHaul(r)), wrap.firstChild);
       if (plateLine(r.truckPlate, r.trailerPlate, r.carrierName)) {
         const vehicle = document.createElement("div");
         vehicle.setAttribute("data-role", "haul-vehicle");
@@ -3190,9 +3945,11 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
     }
 
     // Restore session on reload rather than forcing a fresh login every time.
+    // A saved password-only session must NOT skip the two-step check, or
+    // reloading the page would be a way around it.
     const { data: { session } } = await supabase.auth.getSession();
     if (session) {
-      showLog();
+      await proceedAfterAuth();
     } else {
       showLogin();
     }
