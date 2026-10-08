@@ -1045,6 +1045,44 @@
       return `${fmtBuExact(u.bushels)} — ${u.contractId != null && u.contract ? contractShortLabel(u.contract) : "not on a contract"}`;
     }
 
+    // What became of each ticket number the AI read off a settlement's uploaded document:
+    //   here       the load is already on THIS settlement
+    //   elsewhere  the load is on a different settlement
+    //   available  a load for this buyer, not on any settlement yet (offered in the list below)
+    //   otherBuyer a ticket exists with that number, but the load goes to a different buyer
+    //   missing    no ticket with that number in GrainChain at all
+    // A number counts as found if it matches EITHER the number the driver entered OR the AI's
+    // reading of the photo — so a driver's typo doesn't make a real ticket look missing.
+    function classifyDocumentNumbers(s) {
+      const haulsByNumber = new Map();
+      allHauls.forEach((h) => {
+        [h.ticketNumber, h.aiTicketNumber].forEach((raw) => {
+          const n = normalizeTicketNumber(String(raw ?? ""));
+          if (!n) return; // "—" (no ticket entered) and blanks match nothing
+          if (!haulsByNumber.has(n)) haulsByNumber.set(n, new Set());
+          haulsByNumber.get(n).add(h);
+        });
+      });
+      const onThis = new Set(s.assignments.map((a) => a.shipmentClientId));
+      const onAny = new Set(allSettlements.flatMap((x) => x.assignments.map((a) => a.shipmentClientId)));
+      return (s.extracted_ticket_numbers || [])
+        .map((raw) => String(raw ?? "").trim())
+        .filter((raw) => /[A-Za-z0-9]/.test(raw)) // a stray "—" or "·" has nothing to match, so it isn't a ticket number at all
+        .map((raw) => {
+          const n = normalizeTicketNumber(raw);
+          const found = n ? [...(haulsByNumber.get(n) || [])] : [];
+          let status;
+          if (found.length === 0) status = "missing";
+          else if (found.some((h) => onThis.has(h.haulId))) status = "here";
+          else if (found.some((h) => onAny.has(h.haulId))) status = "elsewhere";
+          else if (found.some((h) => h.destinationId === s.destination_id)) status = "available";
+          else status = "otherBuyer";
+          // found only through the AI's reading of the photo: the driver typed a different number
+          const viaAiOnly = found.length > 0 && found.every((h) => normalizeTicketNumber(h.ticketNumber) !== n);
+          return { raw, n, status, hauls: found, viaAiOnly };
+        });
+    }
+
     // On a settlement: where all of its loads' bushels went, contract by contract.
     function buildSettlementContractBreakdown(s) {
       const byContract = new Map();
@@ -1494,7 +1532,7 @@
           // match (letters/digits only, case-insensitive) so minor OCR
           // formatting differences don't hide a real match.
           const extractedSet = new Set((s.extracted_ticket_numbers || []).map(normalizeTicketNumber));
-          const isOnSettlement = (h) => extractedSet.size > 0 && extractedSet.has(normalizeTicketNumber(h.ticketNumber));
+          const isOnSettlement = (h) => extractedSet.size > 0 && (extractedSet.has(normalizeTicketNumber(h.ticketNumber)) || (!!h.aiTicketNumber && extractedSet.has(normalizeTicketNumber(h.aiTicketNumber))));
           // loads for this buyer with something still to put on a settlement (a load with only
           // some parts on settlements stays here until the rest are too)
           let eligible = sortByTicketNumber(allHauls.filter((h) => h.checkStatus !== "none" && h.destinationId === s.destination_id && unsettledUnits(h).length > 0), (h) => h.ticketNumber);
@@ -1532,11 +1570,74 @@
               // match isn't landing when one looks like it should: the
               // mismatch is usually visible immediately sitting right
               // next to the ticket numbers in the list below.
+              const docNumbers = classifyDocumentNumbers(s);
+              if (docNumbers.length > 0) {
+              const uniqueBy = (items) => { const seen = new Set(); return items.filter((x) => { const k = x.n || x.raw; if (seen.has(k)) return false; seen.add(k); return true; }); };
+              const warn = (role, color, text, sub) => {
+                const box = document.createElement("div");
+                box.setAttribute("data-role", role);
+                box.style.cssText = `margin:6px 0;padding:6px 10px;border-left:3px solid ${color};font-size:12px;`;
+                const main = document.createElement("div");
+                main.style.cssText = `color:${color};font-weight:600;`;
+                main.textContent = text;
+                box.appendChild(main);
+                if (sub) {
+                  const s2 = document.createElement("div");
+                  s2.className = "meta";
+                  s2.textContent = sub;
+                  box.appendChild(s2);
+                }
+                detail.appendChild(box);
+              };
+
+              // 1. numbers on the document that have no ticket in GrainChain at all
+              const missing = uniqueBy(docNumbers.filter((d) => d.status === "missing"));
+              if (missing.length > 0) {
+                warn("doc-missing", "#E2812B",
+                  `⚠ ${missing.length} number${missing.length === 1 ? "" : "s"} on the document ${missing.length === 1 ? "has" : "have"} no ticket in GrainChain: ${missing.map((d) => d.raw).join(", ")}`,
+                  "Nobody has entered a ticket with that number — a haul may never have been started, or the number may have been misread or mistyped. Check it against the document.");
+              } else {
+                warn("doc-all-found", "var(--organic, #5C8A3A)", "✓ Every number on the document has a ticket in GrainChain.");
+              }
+              // 2. a ticket exists, but the load is going to a different buyer, so it isn't offered here
+              const otherBuyer = uniqueBy(docNumbers.filter((d) => d.status === "otherBuyer"));
+              if (otherBuyer.length > 0) {
+                warn("doc-other-buyer", "var(--gold)",
+                  `${otherBuyer.length} number${otherBuyer.length === 1 ? "" : "s"} on the document match${otherBuyer.length === 1 ? "es" : ""} a load going to a different buyer: ${otherBuyer.map((d) => `${d.raw} → ${destName(d.hauls[0].destinationId)}`).join(", ")}`,
+                  "That load won't be offered below because it's for another buyer. If the buyer was entered wrong on the ticket, correct it.");
+              }
+              // 3. found only through the AI's reading of the photo: the driver typed a different number
+              const viaAi = uniqueBy(docNumbers.filter((d) => d.viaAiOnly));
+              if (viaAi.length > 0) {
+                warn("doc-driver-typo", "var(--gold)",
+                  `${viaAi.length} number${viaAi.length === 1 ? "" : "s"} matched only through the AI's reading of the photo — the driver entered a different number: ${viaAi.map((d) => `${d.raw} (driver entered ${d.hauls[0].ticketNumber})`).join(", ")}`,
+                  "That's probably a typo by the driver. The load is still offered below, highlighted.");
+              }
+
+              // What the AI actually read, verbatim: each number marked by what became of it.
+              const STATUS_STYLE = {
+                missing: { style: "color:#E2812B;font-weight:700;", title: "No ticket with this number in GrainChain", mark: "⚠ " },
+                otherBuyer: { style: "color:var(--gold);text-decoration:underline dotted;", title: "A ticket exists, but the load goes to a different buyer", mark: "" },
+                here: { style: "color:var(--text-muted);", title: "Already on this settlement", mark: "" },
+                elsewhere: { style: "color:var(--text-muted);", title: "Already on a different settlement", mark: "" },
+                available: { style: "color:var(--text);", title: "Ticket found — not on a settlement yet", mark: "" },
+              };
               const rawList = document.createElement("div");
               rawList.className = "meta";
-              rawList.style.cssText = "margin-bottom:10px;opacity:0.7;";
-              rawList.textContent = `As read from the document: ${s.extracted_ticket_numbers.join(", ")}`;
+              rawList.setAttribute("data-role", "doc-raw-list");
+              rawList.style.cssText = "margin-bottom:10px;";
+              rawList.appendChild(document.createTextNode("As read from the document: "));
+              docNumbers.forEach((d, i) => {
+                const span = document.createElement("span");
+                span.setAttribute("data-status", d.status);
+                span.setAttribute("title", STATUS_STYLE[d.status].title);
+                span.style.cssText = STATUS_STYLE[d.status].style;
+                span.textContent = `${STATUS_STYLE[d.status].mark}${d.raw}`;
+                rawList.appendChild(span);
+                if (i < docNumbers.length - 1) rawList.appendChild(document.createTextNode(", "));
+              });
               detail.appendChild(rawList);
+              }
             }
           }
           if (eligible.length === 0) {
