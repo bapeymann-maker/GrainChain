@@ -306,15 +306,11 @@
   <script type="module">
     import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
-    // Same Project URL / anon key as the other GrainChain pages.
-    // Replacing this file with a fresh copy puts these two lines back to
-    // their blanks, so paste the anon key again (Supabase -> Project Settings -> API).
-    const SUPABASE_URL = "https://ewzlxjimbxwurzbjzbxw.supabase.co";
-    const SUPABASE_ANON_KEY = "YOUR-ANON-KEY";
-    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-    const CONFIG_PROBLEM = /YOUR-|PASTE-/.test(SUPABASE_URL + SUPABASE_ANON_KEY)
-      ? "This page isn't connected to Supabase yet: near the top of owner.html, paste your project's anon key (Supabase -> Project Settings -> API) in place of YOUR-ANON-KEY, then reload."
-      : null;
+    // TODO: same Project URL / anon key as index.html.
+    const supabase = createClient(
+      "https://ewzlxjimbxwurzbjzbxw.supabase.co",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3emx4amltYnh3dXJ6Ymp6Ynh3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3NDA4NDksImV4cCI6MjEwNTMxNjg0OX0.wJTPNqDP07_129K_90X-SOb4oji8ZENWi4S9L0xjGQk"
+    );
 
     const loginView = document.getElementById("login-view");
     const logView = document.getElementById("log-view");
@@ -477,17 +473,13 @@
       fetchAffidavits().then(() => { if (viewMode === "loads") render(); });
     }
 
-    if (CONFIG_PROBLEM) loginError.textContent = CONFIG_PROBLEM;
     loginBtn.addEventListener("click", async () => {
       loginError.textContent = "";
-      if (CONFIG_PROBLEM) { loginError.textContent = CONFIG_PROBLEM; return; }
       const email = document.getElementById("email").value.trim();
       const password = document.getElementById("password").value;
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) {
-        loginError.textContent = /failed to fetch|networkerror|load failed/i.test(error.message)
-          ? "Couldn't reach Supabase (" + error.message + "). Check your internet connection, and that the project URL and anon key near the top of owner.html are correct."
-          : error.message;
+        loginError.textContent = error.message;
         return;
       }
       await proceedAfterAuth();
