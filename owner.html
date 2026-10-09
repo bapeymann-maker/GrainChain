@@ -310,7 +310,7 @@
     // Replacing this file with a fresh copy puts these two lines back to
     // their blanks, so paste the anon key again (Supabase -> Project Settings -> API).
     const SUPABASE_URL = "https://ewzlxjimbxwurzbjzbxw.supabase.co";
-    const SUPABASE_ANON_KEY = "YOUR-ANON-KEY";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3emx4amltYnh3dXJ6Ymp6Ynh3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3NDA4NDksImV4cCI6MjEwNTMxNjg0OX0.wJTPNqDP07_129K_90X-SOb4oji8ZENWi4S9L0xjGQk";
     const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     const CONFIG_PROBLEM = /YOUR-|PASTE-/.test(SUPABASE_URL + SUPABASE_ANON_KEY)
       ? "This page isn't connected to Supabase yet: near the top of owner.html, paste your project's anon key (Supabase -> Project Settings -> API) in place of YOUR-ANON-KEY, then reload."
