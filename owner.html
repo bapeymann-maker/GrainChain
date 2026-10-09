@@ -310,7 +310,7 @@
     // Replacing this file with a fresh copy puts these two lines back to
     // their blanks, so paste the anon key again (Supabase -> Project Settings -> API).
     const SUPABASE_URL = "https://ewzlxjimbxwurzbjzbxw.supabase.co";
-    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3emx4amltYnh3dXJ6Ymp6Ynh3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3NDA4NDksImV4cCI6MjEwNTMxNjg0OX0.wJTPNqDP07_129K_90X-SOb4oji8ZENWi4S9L0xjGQk";
+    const SUPABASE_ANON_KEY = "YOUR-ANON-KEY";
     const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     const CONFIG_PROBLEM = /YOUR-|PASTE-/.test(SUPABASE_URL + SUPABASE_ANON_KEY)
       ? "This page isn't connected to Supabase yet: near the top of owner.html, paste your project's anon key (Supabase -> Project Settings -> API) in place of YOUR-ANON-KEY, then reload."
@@ -2493,7 +2493,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const det = await supabase.from("rig_details").select("*");
       rigDetailsUnavailable = !!det.error;
       const byId = new Map(((det.error ? [] : det.data) || []).map((d) => [d.id, d]));
-      (data || []).forEach((r) => { const d = byId.get(r.id); r.vin = d ? d.vin : null; r.tab_expires = d ? d.tab_expires : null; });
+      (data || []).forEach((r) => { const d = byId.get(r.id); r.make = d ? d.make ?? null : null; r.model = d ? d.model ?? null : null; r.vin = d ? d.vin : null; r.tab_expires = d ? d.tab_expires : null; });
       // trucks first, then trailers; each in number order (U2 before U10)
       rigList = (data || []).slice().sort((a, b) => (a.kind === b.kind ? a.label.localeCompare(b.label, undefined, { numeric: true }) : a.kind === "truck" ? -1 : 1));
     }
@@ -2501,6 +2501,12 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       if (!rigsLoaded) await fetchRigs();
     }
 
+    function normalizeRigText(raw, label) {
+      const v = String(raw ?? "").trim().replace(/\s+/g, " ");
+      if (v === "") return { ok: true, value: null };
+      if (v.length > 40) return { ok: false, value: null, error: `${label} is too long (40 characters at most).` };
+      return { ok: true, value: v };
+    }
     function normalizeVin(raw) {
       const v = String(raw ?? "").replace(/\s+/g, "").toUpperCase();
       if (v === "") return { ok: true, value: null };
@@ -2535,12 +2541,18 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
     async function saveRigRow(rig, raw) {
       const plate = normalizePlate(raw.plate);
       if (!plate.ok) throw new Error(plate.error);
+      const make = normalizeRigText(raw.make, "Make");
+      if (!make.ok) throw new Error(make.error);
+      const model = normalizeRigText(raw.model, "Model");
+      if (!model.ok) throw new Error(model.error);
       const vin = normalizeVin(raw.vin);
       if (!vin.ok) throw new Error(vin.error);
       const tab = normalizeTab(raw.tab);
       if (!tab.ok) throw new Error(tab.error);
       const changedPlate = (plate.value ?? null) !== (rig.plate ?? null);
       const detailPatch = {};
+      if ((make.value ?? null) !== (rig.make ?? null)) detailPatch.make = make.value;
+      if ((model.value ?? null) !== (rig.model ?? null)) detailPatch.model = model.value;
       if ((vin.value ?? null) !== (rig.vin ?? null)) detailPatch.vin = vin.value;
       if ((tab.value ?? null) !== (rig.tab_expires ?? null)) detailPatch.tab_expires = tab.value;
       const savedBits = [];
@@ -2556,7 +2568,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         if (error || !data || data.length === 0) throw new Error(`${savedBits.length ? "Plate saved, but " : ""}VIN / tab not saved — ${error ? error.message : "check that add-rig-vin-tab.sql has been run"}`);
         Object.assign(rig, detailPatch);
       }
-      return { plate: plate.value, vin: vin.value, tab: tab.value, changed: changedPlate || Object.keys(detailPatch).length > 0 };
+      return { plate: plate.value, make: make.value, model: model.value, vin: vin.value, tab: tab.value, changed: changedPlate || Object.keys(detailPatch).length > 0 };
     }
 
     function renderRigs() {
@@ -2569,10 +2581,12 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const section = (kind, heading) => {
         const rows = rigList.filter((r) => r.kind === kind);
         return `<h3 style="margin:18px 0 8px;font-size:15px;">${heading}</h3>
-          <table><thead><tr><th style="width:90px;">${kind === "truck" ? "Truck" : "Trailer"}</th><th>License plate</th><th>VIN #</th><th>Tab (MO/YR)</th><th></th></tr></thead><tbody>${rows
+          <table><thead><tr><th style="width:90px;">${kind === "truck" ? "Truck" : "Trailer"}</th><th>License plate</th><th>Make</th><th>Model</th><th>VIN #</th><th>Tab (MO/YR)</th><th></th></tr></thead><tbody>${rows
             .map((r) => `<tr data-rig="${escapeHtml(r.id)}">
               <td><b>${escapeHtml(r.label)}</b></td>
               <td><input type="text" data-rig-input="${escapeHtml(r.id)}" value="${escapeHtml(r.plate || "")}" placeholder="Not entered yet" maxlength="24" autocapitalize="characters" autocomplete="off" style="max-width:220px;" /></td>
+              <td><input type="text" data-rig-make="${escapeHtml(r.id)}" value="${escapeHtml(r.make || "")}" placeholder="${rigDetailsUnavailable ? "—" : "e.g. Peterbilt"}" maxlength="44" autocomplete="off" ${rigDetailsUnavailable ? "disabled" : ""} style="min-width:120px;max-width:170px;" /></td>
+              <td><input type="text" data-rig-model="${escapeHtml(r.id)}" value="${escapeHtml(r.model || "")}" placeholder="${rigDetailsUnavailable ? "—" : "e.g. 579"}" maxlength="44" autocomplete="off" ${rigDetailsUnavailable ? "disabled" : ""} style="min-width:110px;max-width:160px;" /></td>
               <td><input type="text" data-rig-vin="${escapeHtml(r.id)}" value="${escapeHtml(r.vin || "")}" placeholder="${rigDetailsUnavailable ? "Run add-rig-vin-tab.sql" : "Not entered yet"}" maxlength="30" autocapitalize="characters" autocomplete="off" ${rigDetailsUnavailable ? "disabled" : ""} style="min-width:200px;max-width:260px;" /></td>
               <td style="white-space:nowrap;"><input type="text" data-rig-tab="${escapeHtml(r.id)}" value="${escapeHtml(r.tab_expires || "")}" placeholder="MM/YY" maxlength="8" autocomplete="off" ${rigDetailsUnavailable ? "disabled" : ""} style="width:80px;" /> <span class="meta" data-rig-tabflag="${escapeHtml(r.id)}" style="color:var(--danger);">${escapeHtml(TAB_FLAG_TEXT[tabStatus(r.tab_expires)] || "")}</span></td>
               <td><button class="small-btn" data-rig-save="${escapeHtml(r.id)}">Save</button> <span class="meta" data-rig-status="${escapeHtml(r.id)}"></span></td>
@@ -2580,7 +2594,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             .join("")}</tbody></table>`;
       };
       root.innerHTML = `<div class="meta" style="margin-bottom:6px;"><b id="rigs-summary">${have} of ${rigList.length}</b> have a plate entered · <span id="rigs-summary-more">${rigList.filter((r) => r.vin).length} VIN · ${rigList.filter((r) => r.tab_expires).length} tab</span>.</div>
-        <div class="meta">Phones show these plates on a haul, and each haul keeps the plate it left with — changing one here never rewrites a haul that's already been made. The VIN and tab are for your records only: phones never see them.${rigDetailsUnavailable ? ` <b>VIN and tab aren't set up yet — run add-rig-vin-tab.sql in the Supabase SQL Editor, then reload.</b>` : ""}</div>
+        <div class="meta">Phones show these plates on a haul, and each haul keeps the plate it left with — changing one here never rewrites a haul that's already been made. The make, model, VIN and tab are for your records only: phones never see them.${rigDetailsUnavailable ? ` <b>Make, model, VIN and tab aren't set up yet — run add-rig-vin-tab.sql in the Supabase SQL Editor, then reload.</b>` : ""}</div>
         ${section("truck", "Trucks")}${section("trailer", "Trailers")}`;
       const flash = (id, msg, bad) => {
         const el = root.querySelector(`[data-rig-status="${id}"]`);
@@ -2589,14 +2603,18 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       };
       const save = async (rig) => {
         const input = root.querySelector(`[data-rig-input="${rig.id}"]`);
+        const makeInput = root.querySelector(`[data-rig-make="${rig.id}"]`);
+        const modelInput = root.querySelector(`[data-rig-model="${rig.id}"]`);
         const vinInput = root.querySelector(`[data-rig-vin="${rig.id}"]`);
         const tabInput = root.querySelector(`[data-rig-tab="${rig.id}"]`);
         const btn = root.querySelector(`[data-rig-save="${rig.id}"]`);
         btn.disabled = true;
         flash(rig.id, "Saving…", false);
         try {
-          const saved = await saveRigRow(rig, { plate: input.value, vin: vinInput.value, tab: tabInput.value });
+          const saved = await saveRigRow(rig, { plate: input.value, make: makeInput.value, model: modelInput.value, vin: vinInput.value, tab: tabInput.value });
           input.value = saved.plate || "";
+          makeInput.value = saved.make || "";
+          modelInput.value = saved.model || "";
           vinInput.value = saved.vin || "";
           tabInput.value = saved.tab || "";
           root.querySelector(`[data-rig-tabflag="${rig.id}"]`).textContent = TAB_FLAG_TEXT[tabStatus(saved.tab)] || "";
@@ -2611,7 +2629,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       };
       rigList.forEach((rig) => {
         root.querySelector(`[data-rig-save="${rig.id}"]`).addEventListener("click", () => save(rig));
-        [`data-rig-input`, `data-rig-vin`, `data-rig-tab`].forEach((attr) => {
+        [`data-rig-input`, `data-rig-make`, `data-rig-model`, `data-rig-vin`, `data-rig-tab`].forEach((attr) => {
           root.querySelector(`[${attr}="${rig.id}"]`).addEventListener("keydown", (e) => { if (e.key === "Enter") save(rig); });
         });
       });
