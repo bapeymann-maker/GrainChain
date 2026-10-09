@@ -306,11 +306,15 @@
   <script type="module">
     import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
-    // TODO: same Project URL / anon key as index.html.
-    const supabase = createClient(
-      "https://ewzlxjimbxwurzbjzbxw.supabase.co",
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3emx4amltYnh3dXJ6Ymp6Ynh3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3NDA4NDksImV4cCI6MjEwNTMxNjg0OX0.wJTPNqDP07_129K_90X-SOb4oji8ZENWi4S9L0xjGQk"
-    );
+    // Same Project URL / anon key as the other GrainChain pages.
+    // Replacing this file with a fresh copy puts these two lines back to
+    // their blanks, so paste the anon key again (Supabase -> Project Settings -> API).
+    const SUPABASE_URL = "https://ewzlxjimbxwurzbjzbxw.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3emx4amltYnh3dXJ6Ymp6Ynh3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3NDA4NDksImV4cCI6MjEwNTMxNjg0OX0.wJTPNqDP07_129K_90X-SOb4oji8ZENWi4S9L0xjGQk";
+    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const CONFIG_PROBLEM = /YOUR-|PASTE-/.test(SUPABASE_URL + SUPABASE_ANON_KEY)
+      ? "This page isn't connected to Supabase yet: near the top of owner.html, paste your project's anon key (Supabase -> Project Settings -> API) in place of YOUR-ANON-KEY, then reload."
+      : null;
 
     const loginView = document.getElementById("login-view");
     const logView = document.getElementById("log-view");
@@ -473,13 +477,17 @@
       fetchAffidavits().then(() => { if (viewMode === "loads") render(); });
     }
 
+    if (CONFIG_PROBLEM) loginError.textContent = CONFIG_PROBLEM;
     loginBtn.addEventListener("click", async () => {
       loginError.textContent = "";
+      if (CONFIG_PROBLEM) { loginError.textContent = CONFIG_PROBLEM; return; }
       const email = document.getElementById("email").value.trim();
       const password = document.getElementById("password").value;
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) {
-        loginError.textContent = error.message;
+        loginError.textContent = /failed to fetch|networkerror|load failed/i.test(error.message)
+          ? "Couldn't reach Supabase (" + error.message + "). Check your internet connection, and that the project URL and anon key near the top of owner.html are correct."
+          : error.message;
         return;
       }
       await proceedAfterAuth();
@@ -2474,12 +2482,18 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
     let rigList = [];
     let rigsLoaded = false;
     let rigsUnavailable = false; // add-rig-plates.sql hasn't been run yet
+    let rigDetailsUnavailable = false; // add-rig-vin-tab.sql hasn't been run yet (VIN / tab columns stay blank and locked)
 
     async function fetchRigs() {
       const { data, error } = await supabase.from("rig_plates").select("*");
       rigsLoaded = true;
       if (error) { rigsUnavailable = true; rigList = []; return; }
       rigsUnavailable = false;
+      // VIN and tab live in their own owner-only table
+      const det = await supabase.from("rig_details").select("*");
+      rigDetailsUnavailable = !!det.error;
+      const byId = new Map(((det.error ? [] : det.data) || []).map((d) => [d.id, d]));
+      (data || []).forEach((r) => { const d = byId.get(r.id); r.vin = d ? d.vin : null; r.tab_expires = d ? d.tab_expires : null; });
       // trucks first, then trailers; each in number order (U2 before U10)
       rigList = (data || []).slice().sort((a, b) => (a.kind === b.kind ? a.label.localeCompare(b.label, undefined, { numeric: true }) : a.kind === "truck" ? -1 : 1));
     }
@@ -2487,14 +2501,62 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       if (!rigsLoaded) await fetchRigs();
     }
 
-    async function saveRigPlate(rig, rawValue) {
-      const tidy = normalizePlate(rawValue);
-      if (!tidy.ok) throw new Error(tidy.error);
-      // .select() so a permission problem (zero rows quietly updated) is an error, not a fake "Saved"
-      const { data, error } = await supabase.from("rig_plates").update({ plate: tidy.value }).eq("id", rig.id).select("id");
-      if (error || !data || data.length === 0) throw new Error(error ? error.message : "Nothing was saved — check that add-rig-plates.sql has been run");
-      rig.plate = tidy.value;
-      return tidy.value;
+    function normalizeVin(raw) {
+      const v = String(raw ?? "").replace(/\s+/g, "").toUpperCase();
+      if (v === "") return { ok: true, value: null };
+      if (!/^[A-Z0-9-]{5,25}$/.test(v)) return { ok: false, value: null, error: "VIN: letters and numbers only, 5 to 25 characters." };
+      if (v.length === 17 && /[IOQ]/.test(v)) return { ok: false, value: null, error: "VIN: a 17-character VIN never contains the letters I, O or Q — check for a 1 or a 0." };
+      return { ok: true, value: v };
+    }
+    // "3/27", "03/27", "03/2027", "03-27" or "0327" -> "03/27"
+    function normalizeTab(raw) {
+      const v = String(raw ?? "").trim();
+      if (v === "") return { ok: true, value: null };
+      const m = v.match(/^(\d{1,2})\s*[\/\-.]\s*(\d{2}|\d{4})$/) || v.match(/^(\d{2})(\d{2})$/);
+      const mo = m ? Number(m[1]) : 0;
+      const yr = m ? (m[2].length === 4 ? Number(m[2]) : 2000 + Number(m[2])) : 0;
+      if (!m || mo < 1 || mo > 12 || yr < 2000 || yr > 2099) return { ok: false, value: null, error: "Tab: enter the month and year, like 03/27." };
+      return { ok: true, value: `${String(mo).padStart(2, "0")}/${String(yr % 100).padStart(2, "0")}` };
+    }
+    // A tab is good through the end of its month.
+    function tabStatus(value, now = new Date()) {
+      const m = String(value || "").match(/^(\d{2})\/(\d{2})$/);
+      if (!m) return null;
+      const endOfMonth = new Date(2000 + Number(m[2]), Number(m[1]), 1); // first moment after that month
+      if (now >= endOfMonth) return "expired";
+      return endOfMonth - now <= 31 * 24 * 3600 * 1000 ? "soon" : null;
+    }
+    const TAB_FLAG_TEXT = { expired: "Expired", soon: "Expires within a month" };
+
+    // Saves what changed for one rig: the plate (rig_plates) and/or the VIN and
+    // tab (rig_details). Everything is checked first, so nothing is sent if any
+    // value is wrong. The .select() makes a permission problem (zero rows quietly
+    // updated) an error instead of a fake "Saved".
+    async function saveRigRow(rig, raw) {
+      const plate = normalizePlate(raw.plate);
+      if (!plate.ok) throw new Error(plate.error);
+      const vin = normalizeVin(raw.vin);
+      if (!vin.ok) throw new Error(vin.error);
+      const tab = normalizeTab(raw.tab);
+      if (!tab.ok) throw new Error(tab.error);
+      const changedPlate = (plate.value ?? null) !== (rig.plate ?? null);
+      const detailPatch = {};
+      if ((vin.value ?? null) !== (rig.vin ?? null)) detailPatch.vin = vin.value;
+      if ((tab.value ?? null) !== (rig.tab_expires ?? null)) detailPatch.tab_expires = tab.value;
+      const savedBits = [];
+      if (changedPlate) {
+        const { data, error } = await supabase.from("rig_plates").update({ plate: plate.value }).eq("id", rig.id).select("id");
+        if (error || !data || data.length === 0) throw new Error(error ? error.message : "Nothing was saved — check that add-rig-plates.sql has been run");
+        rig.plate = plate.value;
+        savedBits.push("plate");
+      }
+      if (Object.keys(detailPatch).length) {
+        if (rigDetailsUnavailable) throw new Error(`${savedBits.length ? "Plate saved, but " : ""}VIN and tab can't be saved yet — run add-rig-vin-tab.sql, then reload`);
+        const { data, error } = await supabase.from("rig_details").update(detailPatch).eq("id", rig.id).select("id");
+        if (error || !data || data.length === 0) throw new Error(`${savedBits.length ? "Plate saved, but " : ""}VIN / tab not saved — ${error ? error.message : "check that add-rig-vin-tab.sql has been run"}`);
+        Object.assign(rig, detailPatch);
+      }
+      return { plate: plate.value, vin: vin.value, tab: tab.value, changed: changedPlate || Object.keys(detailPatch).length > 0 };
     }
 
     function renderRigs() {
@@ -2507,16 +2569,18 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const section = (kind, heading) => {
         const rows = rigList.filter((r) => r.kind === kind);
         return `<h3 style="margin:18px 0 8px;font-size:15px;">${heading}</h3>
-          <table><thead><tr><th style="width:90px;">${kind === "truck" ? "Truck" : "Trailer"}</th><th>License plate</th><th></th></tr></thead><tbody>${rows
+          <table><thead><tr><th style="width:90px;">${kind === "truck" ? "Truck" : "Trailer"}</th><th>License plate</th><th>VIN #</th><th>Tab (MO/YR)</th><th></th></tr></thead><tbody>${rows
             .map((r) => `<tr data-rig="${escapeHtml(r.id)}">
               <td><b>${escapeHtml(r.label)}</b></td>
               <td><input type="text" data-rig-input="${escapeHtml(r.id)}" value="${escapeHtml(r.plate || "")}" placeholder="Not entered yet" maxlength="24" autocapitalize="characters" autocomplete="off" style="max-width:220px;" /></td>
+              <td><input type="text" data-rig-vin="${escapeHtml(r.id)}" value="${escapeHtml(r.vin || "")}" placeholder="${rigDetailsUnavailable ? "Run add-rig-vin-tab.sql" : "Not entered yet"}" maxlength="30" autocapitalize="characters" autocomplete="off" ${rigDetailsUnavailable ? "disabled" : ""} style="min-width:200px;max-width:260px;" /></td>
+              <td style="white-space:nowrap;"><input type="text" data-rig-tab="${escapeHtml(r.id)}" value="${escapeHtml(r.tab_expires || "")}" placeholder="MM/YY" maxlength="8" autocomplete="off" ${rigDetailsUnavailable ? "disabled" : ""} style="width:80px;" /> <span class="meta" data-rig-tabflag="${escapeHtml(r.id)}" style="color:var(--danger);">${escapeHtml(TAB_FLAG_TEXT[tabStatus(r.tab_expires)] || "")}</span></td>
               <td><button class="small-btn" data-rig-save="${escapeHtml(r.id)}">Save</button> <span class="meta" data-rig-status="${escapeHtml(r.id)}"></span></td>
             </tr>`)
             .join("")}</tbody></table>`;
       };
-      root.innerHTML = `<div class="meta" style="margin-bottom:6px;"><b id="rigs-summary">${have} of ${rigList.length}</b> have a plate entered.</div>
-        <div class="meta">Phones show these plates on a haul, and each haul keeps the plate it left with — changing one here never rewrites a haul that's already been made.</div>
+      root.innerHTML = `<div class="meta" style="margin-bottom:6px;"><b id="rigs-summary">${have} of ${rigList.length}</b> have a plate entered · <span id="rigs-summary-more">${rigList.filter((r) => r.vin).length} VIN · ${rigList.filter((r) => r.tab_expires).length} tab</span>.</div>
+        <div class="meta">Phones show these plates on a haul, and each haul keeps the plate it left with — changing one here never rewrites a haul that's already been made. The VIN and tab are for your records only: phones never see them.${rigDetailsUnavailable ? ` <b>VIN and tab aren't set up yet — run add-rig-vin-tab.sql in the Supabase SQL Editor, then reload.</b>` : ""}</div>
         ${section("truck", "Trucks")}${section("trailer", "Trailers")}`;
       const flash = (id, msg, bad) => {
         const el = root.querySelector(`[data-rig-status="${id}"]`);
@@ -2525,14 +2589,20 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       };
       const save = async (rig) => {
         const input = root.querySelector(`[data-rig-input="${rig.id}"]`);
+        const vinInput = root.querySelector(`[data-rig-vin="${rig.id}"]`);
+        const tabInput = root.querySelector(`[data-rig-tab="${rig.id}"]`);
         const btn = root.querySelector(`[data-rig-save="${rig.id}"]`);
         btn.disabled = true;
         flash(rig.id, "Saving…", false);
         try {
-          const saved = await saveRigPlate(rig, input.value);
-          input.value = saved || "";
-          flash(rig.id, saved ? "Saved" : "Cleared", false);
+          const saved = await saveRigRow(rig, { plate: input.value, vin: vinInput.value, tab: tabInput.value });
+          input.value = saved.plate || "";
+          vinInput.value = saved.vin || "";
+          tabInput.value = saved.tab || "";
+          root.querySelector(`[data-rig-tabflag="${rig.id}"]`).textContent = TAB_FLAG_TEXT[tabStatus(saved.tab)] || "";
+          flash(rig.id, saved.changed ? "Saved" : "No changes", false);
           document.getElementById("rigs-summary").textContent = `${rigList.filter((r) => r.plate).length} of ${rigList.length}`;
+          document.getElementById("rigs-summary-more").textContent = `${rigList.filter((r) => r.vin).length} VIN · ${rigList.filter((r) => r.tab_expires).length} tab`;
         } catch (err) {
           flash(rig.id, err.message, true);
         } finally {
@@ -2541,7 +2611,9 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       };
       rigList.forEach((rig) => {
         root.querySelector(`[data-rig-save="${rig.id}"]`).addEventListener("click", () => save(rig));
-        root.querySelector(`[data-rig-input="${rig.id}"]`).addEventListener("keydown", (e) => { if (e.key === "Enter") save(rig); });
+        [`data-rig-input`, `data-rig-vin`, `data-rig-tab`].forEach((attr) => {
+          root.querySelector(`[${attr}="${rig.id}"]`).addEventListener("keydown", (e) => { if (e.key === "Enter") save(rig); });
+        });
       });
     }
 
