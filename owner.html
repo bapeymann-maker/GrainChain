@@ -324,6 +324,7 @@
     const CONFIG_PROBLEM = /YOUR-|PASTE-/.test(SUPABASE_URL + SUPABASE_ANON_KEY)
       ? "This page isn't connected to Supabase yet: near the top of owner.html, paste your project's anon key (Supabase -> Project Settings -> API) in place of YOUR-ANON-KEY, then reload."
       : null;
+      
 
     const loginView = document.getElementById("login-view");
     const logView = document.getElementById("log-view");
