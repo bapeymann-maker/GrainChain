@@ -81,6 +81,11 @@
     .item-detail { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }
     .ticket-pick-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
     .ticket-pick-row:last-child { border-bottom: none; }
+    /* Contracts and settlements are listed under a heading for each buyer */
+    .buyer-group-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; margin: 22px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+    .buyer-group-head:first-child { margin-top: 0; }
+    .buyer-group-head .buyer-name { font-weight: 700; font-size: 15px; color: var(--gold); }
+    .buyer-group-head .meta { font-size: 12px; }
     .small-btn { font-size: 12px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
     .small-btn.gold { border-color: var(--gold); background: var(--gold-dark); color: var(--gold); }
     .small-btn.danger { border-color: var(--danger); color: var(--danger); }
@@ -315,7 +320,6 @@
     // their blanks, so paste the anon key again (Supabase -> Project Settings -> API).
     const SUPABASE_URL = "https://ewzlxjimbxwurzbjzbxw.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3emx4amltYnh3dXJ6Ymp6Ynh3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk3NDA4NDksImV4cCI6MjEwNTMxNjg0OX0.wJTPNqDP07_129K_90X-SOb4oji8ZENWi4S9L0xjGQk";
-    //
     const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     const CONFIG_PROBLEM = /YOUR-|PASTE-/.test(SUPABASE_URL + SUPABASE_ANON_KEY)
       ? "This page isn't connected to Supabase yet: near the top of owner.html, paste your project's anon key (Supabase -> Project Settings -> API) in place of YOUR-ANON-KEY, then reload."
@@ -1244,17 +1248,52 @@
     // numerically (so "AH-2" sorts before "AH-10", unlike plain string
     // comparison), while still handling fully numeric or letter-prefixed
     // ticket numbers ("DAK 61431") sensibly either way.
+    // Smallest to largest. A load with no ticket number yet has nothing to sort by, so it goes last.
     function sortByTicketNumber(items, getTicketNumber) {
-      return [...items].sort((a, b) =>
-        (getTicketNumber(a) || "").localeCompare(getTicketNumber(b) || "", undefined, { numeric: true, sensitivity: "base" })
-      );
+      const has = (t) => !!t && t !== "—";
+      return [...items].sort((a, b) => {
+        const x = getTicketNumber(a), y = getTicketNumber(b);
+        if (has(x) !== has(y)) return has(x) ? -1 : 1;
+        return (x || "").localeCompare(y || "", undefined, { numeric: true, sensitivity: "base" });
+      });
     }
 
+    // "#1372793 · 10/3/2026 · External Driver · Van De Riet Quarter (field) · 68,980 lb / 1,149.667 bu"
+    // The date is the day the load left (the haul's departed time).
     function haulSummary(h) {
       if (!h) return "(load not found)";
-      const ticketPart = h.ticketNumber && h.ticketNumber !== "—" ? `#${h.ticketNumber} · ` : "";
-      return `${ticketPart}${h.driver} · ${h.origin} · ${h.driverNet}`;
+      const date = h.departed_at ? new Date(h.departed_at).toLocaleDateString() : null;
+      return [h.ticketNumber && h.ticketNumber !== "—" ? `#${h.ticketNumber}` : null, date, h.driver, h.origin, h.driverNet].filter(Boolean).join(" · ");
     }
+
+    // Contracts and settlements are shown under a heading for each buyer. Buyers run A to Z (a buyer's
+    // separate sites, like Valero Welcome and Valero Hartley, are separate buyers here and sit next to
+    // each other); each buyer's items keep the order they already had; anything with no buyer goes last.
+    function orderByBuyer(items) {
+      return items
+        .map((x, i) => ({ x, i, name: x.destination_id ? destName(x.destination_id) : null }))
+        .sort((a, b) => {
+          if (a.name === null || b.name === null) return a.name === b.name ? a.i - b.i : a.name === null ? 1 : -1;
+          return a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.i - b.i;
+        })
+        .map((o) => o.x);
+    }
+    function buyerHeading(destinationId, summaryText) {
+      const el = document.createElement("div");
+      el.className = "buyer-group-head";
+      el.setAttribute("data-role", "buyer-group");
+      el.setAttribute("data-buyer", destinationId || "");
+      const name = document.createElement("span");
+      name.className = "buyer-name";
+      name.textContent = destinationId ? destName(destinationId) : "No buyer set";
+      el.appendChild(name);
+      const meta = document.createElement("span");
+      meta.className = "meta";
+      meta.textContent = summaryText;
+      el.appendChild(meta);
+      return el;
+    }
+    const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
     // ---------------- Contracts ----------------
 
@@ -1518,13 +1557,13 @@
       const span = document.createElement("span");
       span.style.flex = "1";
       span.textContent = `${haulSummary(h)} — ${remaining.toLocaleString()} bu remaining`;
-      row.appendChild(span);
       const input = document.createElement("input");
       input.type = "number";
       input.step = "any";
       input.value = suggested || "";
-      input.style.cssText = "width:90px;font-size:13px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);";
-      row.appendChild(input);
+      input.title = "Bushels to assign to this contract";
+      input.setAttribute("aria-label", "Bushels to assign");
+      input.style.cssText = "width:90px;flex:none;font-size:13px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);";
       const btn = document.createElement("button");
       btn.className = "small-btn gold";
       btn.textContent = "Assign";
@@ -1537,7 +1576,10 @@
         if (Math.round(amt * 100) > Math.round(remaining * 100)) { alert(`Only ${(Math.round(remaining * 100) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 })} bu of this haul is still unallocated.`); return; }
         assignToContract(h.haulId, c.id, Math.round(amt * 100) / 100);
       });
+      // Assign first, then the bushels, then the load: the same side the buttons are on in Settlements
       row.appendChild(btn);
+      row.appendChild(input);
+      row.appendChild(span);
       return row;
     }
 
@@ -1547,7 +1589,15 @@
         contractsListEl.innerHTML = `<div style="color:var(--text-muted);font-size:13px;">No contracts yet — click "+ Add contract" above.</div>`;
         return;
       }
-      allContracts.forEach((c) => {
+      let lastBuyer = Symbol();
+      orderByBuyer(allContracts).forEach((c) => {
+        const buyer = c.destination_id || null;
+        if (buyer !== lastBuyer) {
+          lastBuyer = buyer;
+          const group = allContracts.filter((x) => (x.destination_id || null) === buyer);
+          const toGo = group.reduce((sum, x) => sum + Math.max(0, Number(x.bushels || 0) - Number(x.delivered_bushels || 0)), 0);
+          contractsListEl.appendChild(buyerHeading(buyer, `${plural(group.length, "contract")} · ${Math.round(toGo).toLocaleString()} bu still to deliver`));
+        }
         const pct = c.bushels > 0 ? Math.min(100, Math.round((c.delivered_bushels / c.bushels) * 100)) : 0;
         const expanded = expandedContracts.has(c.id);
         const saleLabel = c.sale_type === "non_gmo" ? "Non-GMO" : c.sale_type.charAt(0).toUpperCase() + c.sale_type.slice(1);
@@ -1741,7 +1791,15 @@
         settlementsListEl.innerHTML = `<div style="color:var(--text-muted);font-size:13px;">No settlements yet — click "+ Upload settlement" above.</div>`;
         return;
       }
-      allSettlements.forEach((s) => {
+      let lastBuyer = Symbol();
+      orderByBuyer(allSettlements).forEach((s) => {
+        const buyer = s.destination_id || null;
+        if (buyer !== lastBuyer) {
+          lastBuyer = buyer;
+          const group = allSettlements.filter((x) => (x.destination_id || null) === buyer);
+          const unpaid = group.filter((x) => !x.paid).length;
+          settlementsListEl.appendChild(buyerHeading(buyer, `${plural(group.length, "settlement")} · ${unpaid} unpaid`));
+        }
         const expanded = expandedSettlements.has(s.id);
         // what's actually ON this settlement: the part, for a part of a load; the whole ticket otherwise
         const totalBushels = s.assignments.reduce((sum, a) => sum + assignmentBushels(a, allHauls.find((x) => x.haulId === a.shipmentClientId)), 0);
