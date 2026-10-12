@@ -99,6 +99,12 @@ legibility_issues is ONLY for things you could not confidently read — leave it
 
 Copy handwritten notes exactly as written into handwritten_notes. Do not perform any arithmetic yourself — report the numbers as printed. If the photo does not contain a scale ticket at all, return null for every field and add one legibility_issues entry with field "other" saying so.`;
 
+// Added only when the file is a PDF (a scanned or emailed ticket rather than
+// a phone photo). Photos get the prompt above, unchanged.
+const PDF_PROMPT_EXTRA = `
+
+This file is a PDF, not a phone photo, so "photo" above means the PDF page. Use the page that carries the scale ticket. If the PDF holds more than one different ticket (different ticket numbers), read only the first one and add one legibility_issues entry with field "other" saying the PDF has more than one ticket.`;
+
 // The actual read-a-photo-and-save-a-row work, shared by the webhook
 // handler below and by api/retry-ticket-read.js (an authenticated,
 // owner-triggered path for re-running a read that never happened the
@@ -133,8 +139,16 @@ async function processTicketPhoto(bucket, path) {
       headers: { Authorization: `Bearer ${serviceKey}`, apikey: serviceKey },
     });
     if (!imgRes.ok) throw new Error(`Could not download photo (${imgRes.status})`);
-    const mediaType = imgRes.headers.get("content-type") || "image/jpeg";
+    const contentType = (imgRes.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    // A PDF (the owner page's "Choose a PDF") goes to Claude as a document
+    // block; photos go as image blocks. Decide by what storage says it is,
+    // or by the file name if storage says something generic.
+    const isPdf = contentType === "application/pdf" || /\.pdf$/i.test(path);
+    const mediaType = contentType.startsWith("image/") ? contentType : "image/jpeg";
     const base64 = Buffer.from(await imgRes.arrayBuffer()).toString("base64");
+    const fileBlock = isPdf
+      ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
+      : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
 
     // 2. Ask Claude to transcribe it, forced into the schema above.
     const aiRes = await fetch("https://api.anthropic.com/v1/messages", {
@@ -153,8 +167,8 @@ async function processTicketPhoto(bucket, path) {
           {
             role: "user",
             content: [
-              { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-              { type: "text", text: PROMPT },
+              fileBlock,
+              { type: "text", text: isPdf ? PROMPT + PDF_PROMPT_EXTRA : PROMPT },
             ],
           },
         ],

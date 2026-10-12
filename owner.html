@@ -3144,8 +3144,22 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
     // normal "driver entered vs. AI read" comparison works on it too.
     // =====================================================================
     const SCAN_TYPES = ["image/jpeg", "image/png", "image/webp"];
-    const SCAN_EXT = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+    const SCAN_EXT = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "application/pdf": "pdf" };
     const SCAN_MAX_BYTES = 5 * 1024 * 1024;
+    const SCAN_PDF_MAX_BYTES = 10 * 1024 * 1024; // matches the storage bucket limit (allow-pdf-ticket-upload.sql)
+    const isPdfFile = (f) => !!f && (f.type === "application/pdf" || /\.pdf$/i.test(f.name || ""));
+    // A real PDF starts with "%PDF-". Checked here so a renamed photo or an
+    // empty file is turned away before it is uploaded.
+    function looksLikePdf(file) {
+      return new Promise((resolve) => {
+        try {
+          const fr = new FileReader();
+          fr.onload = () => resolve(String.fromCharCode(...new Uint8Array(fr.result)) === "%PDF-");
+          fr.onerror = () => resolve(false);
+          fr.readAsArrayBuffer(file.slice(0, 5));
+        } catch { resolve(false); }
+      });
+    }
     const scanTiming = () => Object.assign({ pollMs: 3000, retryAfterMs: 21000, giveUpMs: 75000 }, window.__GC_SCAN_TIMING || {});
     const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
     const mk = (tag, props = {}, kids = []) => {
@@ -3230,7 +3244,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
     async function openScanEntry() {
       if (!(await ensureEditSession())) return;
       await ensureDestinations();
-      const m = openModal("Enter a haul from a ticket photo");
+      const m = openModal("Enter a haul from a ticket photo or PDF");
       const stage = mk("div", { "data-role": "scan-stage" });
       m.box.appendChild(stage);
       let closed = false;
@@ -3240,17 +3254,19 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const button = (text, role, cls, onClick) => { const b = mk("button", { className: "small-btn" + (cls ? " " + cls : ""), text, "data-role": role }); b.addEventListener("click", onClick); return b; };
       const errorLine = (text) => { const e = mk("div", { className: "modal-error", "data-role": "scan-error", text }); stage.appendChild(e); return e; };
 
-      // ---- step 1: choose a photo ----
+      // ---- step 1: choose a photo or a PDF ----
       function stepPick(problem) {
         clear();
-        stage.appendChild(mk("div", { style: "font-size:13px;line-height:1.5;", text: "Take a photo of the scale ticket, or choose one you already have. Lay it flat with the whole ticket in view, and make sure the ticket number and date can be read. The AI reads it and fills in the form below; you check it before anything is saved." }));
+        stage.appendChild(mk("div", { style: "font-size:13px;line-height:1.5;", text: "Take a photo of the scale ticket, choose one you already have, or upload a PDF of it. For a photo, lay the ticket flat with the whole ticket in view; either way, make sure the ticket number and date can be read. The AI reads it and fills in the form below; you check it before anything is saved." }));
         if (problem) errorLine(problem);
         const camera = mk("input", { type: "file", accept: "image/*", capture: "environment", style: "display:none;", "data-role": "scan-file-camera" });
         const library = mk("input", { type: "file", accept: "image/*", style: "display:none;", "data-role": "scan-file-library" });
-        [camera, library].forEach((inp) => inp.addEventListener("change", () => { const f = inp.files && inp.files[0]; if (f) handleFile(f); }));
-        stage.appendChild(camera); stage.appendChild(library);
+        const pdf = mk("input", { type: "file", accept: "application/pdf,.pdf", style: "display:none;", "data-role": "scan-file-pdf" });
+        [camera, library, pdf].forEach((inp) => inp.addEventListener("change", () => { const f = inp.files && inp.files[0]; if (f) handleFile(f); }));
+        stage.appendChild(camera); stage.appendChild(library); stage.appendChild(pdf);
         buttons(
           button("Cancel", "scan-cancel", "", close),
+          button("Choose a PDF", "scan-choose-pdf", "", () => pdf.click()),
           button("Choose a photo", "scan-choose", "", () => library.click()),
           button("Take a photo", "scan-take", "gold", () => camera.click()),
         );
@@ -3259,24 +3275,36 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       // ---- step 2: upload, then wait for the reading ----
       async function handleFile(file) {
         clear();
-        const status = mk("div", { "data-role": "scan-status", style: "font-size:13px;", text: "Preparing the photo…" });
+        const isPdf = isPdfFile(file);
+        const what = isPdf ? "PDF" : "photo";
+        const status = mk("div", { "data-role": "scan-status", style: "font-size:13px;", text: isPdf ? "Checking the PDF…" : "Preparing the photo…" });
         stage.appendChild(status);
-        const prepared = await prepareTicketPhoto(file);
-        if (closed) return;
-        if (!SCAN_TYPES.includes(prepared.type)) return stepPick("That file isn't a JPEG, PNG or WebP photo. Try taking the photo again.");
-        if (prepared.blob.size > SCAN_MAX_BYTES) return stepPick("That photo is over 5 MB even after shrinking. Try a closer photo of just the ticket.");
+        let prepared;
+        if (isPdf) {
+          if (file.size > SCAN_PDF_MAX_BYTES) return stepPick("That PDF is over 10 MB. Try scanning at a lower quality, or take a photo of the ticket instead.");
+          if (!(await looksLikePdf(file))) return stepPick("That file doesn't look like a PDF. Choose the PDF again, or take a photo of the ticket.");
+          if (closed) return;
+          prepared = { blob: new Blob([file], { type: "application/pdf" }), type: "application/pdf" };
+        } else {
+          prepared = await prepareTicketPhoto(file);
+          if (closed) return;
+          if (!SCAN_TYPES.includes(prepared.type)) return stepPick("That file isn't a JPEG, PNG or WebP photo. Try taking the photo again, or upload a PDF.");
+          if (prepared.blob.size > SCAN_MAX_BYTES) return stepPick("That photo is over 5 MB even after shrinking. Try a closer photo of just the ticket.");
+        }
         const shipId = crypto.randomUUID(), ticketId = crypto.randomUUID();
         const path = `${shipId}/${ticketId}.${SCAN_EXT[prepared.type]}`;
-        status.textContent = "Uploading the photo…";
+        status.textContent = `Uploading the ${what}…`;
         const up = await supabase.storage.from("scale-tickets").upload(path, prepared.blob, { contentType: prepared.type, upsert: false });
         if (closed) return;
         if (up.error) {
-          const why = /row-level security|policy|not authorized|403/i.test(up.error.message)
+          const why = /mime|not supported|unsupported/i.test(up.error.message)
+            ? "Storage doesn't accept PDFs yet. Run allow-pdf-ticket-upload.sql in the Supabase SQL Editor, then try again."
+            : /row-level security|policy|not authorized|403/i.test(up.error.message)
             ? "The database refused the upload. Run allow-owner-scan-entry.sql in the Supabase SQL Editor, and make sure your authenticator code is confirmed (sign out and in if needed)."
             : up.error.message;
-          return stepPick("The photo wasn't uploaded: " + why);
+          return stepPick(`The ${what} wasn't uploaded: ` + why);
         }
-        const photo = { shipId, ticketId, path, blob: prepared.blob, url: URL.createObjectURL(prepared.blob) };
+        const photo = { shipId, ticketId, path, blob: prepared.blob, url: URL.createObjectURL(prepared.blob), isPdf, name: file.name || "ticket.pdf", size: prepared.blob.size };
         await stepReading(photo);
       }
 
@@ -3301,9 +3329,10 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         }
         if (closed) return;
         let note = null;
+        const what = photo.isPdf ? "PDF" : "photo";
         if (!read && !skipped) note = kickError
-          ? `The AI reading didn't arrive (${kickError}). Type the details in from the photo; the reading will still attach to this ticket if it arrives later.`
-          : "The AI reading is taking longer than usual. Type the details in from the photo; the reading will still attach to this ticket if it arrives later.";
+          ? `The AI reading didn't arrive (${kickError}). Type the details in from the ${what}; the reading will still attach to this ticket if it arrives later.`
+          : `The AI reading is taking longer than usual. Type the details in from the ${what}; the reading will still attach to this ticket if it arrives later.`;
         return stepForm(photo, read, note);
       }
 
@@ -3392,12 +3421,23 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
 
         // what the AI said, next to the photo
         const top = mk("div", { style: "display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start;margin-bottom:10px;" });
-        const img = mk("img", { src: photo.url, alt: "The ticket photo", "data-role": "scan-photo", style: "max-width:220px;max-height:260px;border-radius:8px;border:1px solid var(--border);cursor:zoom-in;" });
-        img.addEventListener("click", () => window.open(photo.url, "_blank", "noopener"));
-        top.appendChild(img);
+        const what = photo.isPdf ? "PDF" : "photo";
+        if (photo.isPdf) {
+          // a PDF can't be shown as a picture here; a tile opens it in its own tab
+          const tile = mk("button", { className: "small-btn", "data-role": "scan-pdf", type: "button", style: "min-width:180px;max-width:220px;padding:14px 12px;text-align:left;display:flex;flex-direction:column;gap:4px;line-height:1.3;" });
+          tile.appendChild(mk("strong", { text: "PDF ticket" }));
+          tile.appendChild(mk("span", { style: "font-size:12px;overflow-wrap:anywhere;", text: `${photo.name} · ${(photo.size / 1024 / 1024).toFixed(1)} MB` }));
+          tile.appendChild(mk("span", { style: "font-size:12px;text-decoration:underline;", text: "Open to check it" }));
+          tile.addEventListener("click", () => window.open(photo.url, "_blank", "noopener"));
+          top.appendChild(tile);
+        } else {
+          const img = mk("img", { src: photo.url, alt: "The ticket photo", "data-role": "scan-photo", style: "max-width:220px;max-height:260px;border-radius:8px;border:1px solid var(--border);cursor:zoom-in;" });
+          img.addEventListener("click", () => window.open(photo.url, "_blank", "noopener"));
+          top.appendChild(img);
+        }
         const notes = mk("div", { "data-role": "scan-ai-notes", style: "flex:1;min-width:220px;font-size:12px;display:flex;flex-direction:column;gap:6px;" });
         if (note) notes.appendChild(mk("div", { className: "modal-note", style: "margin:0;", text: note }));
-        if (read && read.error) notes.appendChild(mk("div", { className: "modal-error", style: "margin:0;", text: `The AI couldn't read this photo (${read.error}). Type the details in from the photo.` }));
+        if (read && read.error) notes.appendChild(mk("div", { className: "modal-error", style: "margin:0;", text: `The AI couldn't read this ${what} (${read.error}). Type the details in from the ${what}.` }));
         if (ok) {
           notes.appendChild(mk("div", { text: `AI read: ${[g("buyer_name"), g("buyer_location")].filter(Boolean).join(", ") || "buyer not legible"} · ticket ${g("ticket_number") || "not legible"}${g("ticket_number_complete") === false ? " (partly hidden — type the full number)" : ""}` }));
           const chk = read.arithmetic_check;
@@ -3407,9 +3447,9 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             notes.appendChild(mk("div", { className: "modal-note", style: "margin:0;", text: "Hard to read — " + (typeof i === "string" ? i : `${i.field}: ${i.note}`) })));
           if (!draftHaul.departed_at && g("ticket_date")) notes.appendChild(mk("div", { className: "modal-note", style: "margin:0;", text: `Couldn't turn "${g("ticket_date")} ${g("gross_time") || ""}" into a date and time — set it yourself.` }));
         } else if (!note && !(read && read.error)) {
-          notes.appendChild(mk("div", { text: "Typing it in by hand. The photo is saved with the ticket." }));
+          notes.appendChild(mk("div", { text: `Typing it in by hand. The ${what} is saved with the ticket.` }));
         }
-        notes.appendChild(mk("div", { className: "meta", text: "Check every number against the photo before saving." }));
+        notes.appendChild(mk("div", { className: "meta", text: `Check every number against the ${what} before saving.` }));
         top.appendChild(notes);
         stage.appendChild(top);
 
@@ -4279,7 +4319,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const btn = document.createElement("button");
         btn.className = "photo-link";
         btn.style.marginTop = "12px";
-        btn.textContent = "View photo";
+        btn.textContent = /\.pdf$/i.test(r.photoPath) ? "View PDF" : "View photo";
         btn.addEventListener("click", (e) => {
           e.stopPropagation();
           showPhoto(r.photoPath, btn);
@@ -4487,7 +4527,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           <td class="driver-val">${escapeHtml(r.driverNet)}</td>
           <td class="ai-val">${aiNetCell}</td>
           <td>${checkBadge}</td>
-          <td>${r.photoPath ? `<button class="photo-link" data-path="${escapeHtml(r.photoPath)}">View photo</button>` : "—"}</td>
+          <td>${r.photoPath ? `<button class="photo-link" data-path="${escapeHtml(r.photoPath)}">${/\.pdf$/i.test(r.photoPath) ? "View PDF" : "View photo"}</button>` : "—"}</td>
         `;
         if (r.arithmeticCheck && r.arithmeticCheck.startsWith("fail")) tr.title = r.arithmeticCheck;
         tr.addEventListener("click", (e) => {
