@@ -55,6 +55,10 @@
     .ai-val { color: var(--ai-yellow); }
     .haul-row { cursor: pointer; }
     .haul-row:hover { background: var(--panel); }
+    /* the same ticket number entered on more than one haul: every one of them is tinted yellow */
+    .haul-row.dup-ticket { background: rgba(250, 204, 21, 0.14); }
+    .haul-row.dup-ticket > td:first-child { box-shadow: inset 3px 0 0 #facc15; }
+    .haul-row.dup-ticket:hover { background: rgba(250, 204, 21, 0.24); }
     .haul-detail-cell { background: var(--panel); padding: 16px 20px !important; white-space: normal; }
     .detail-cols { display: grid; grid-template-columns: 160px 1fr 1fr; gap: 4px 16px; font-size: 13px; align-items: baseline; }
     .detail-cols .dh { color: var(--text-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; padding-bottom: 4px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
@@ -1526,7 +1530,10 @@
       btn.addEventListener("click", () => {
         const amt = Number(input.value);
         if (!(amt > 0)) { alert("Enter how many bushels to assign."); return; }
-        if (amt > remaining + 0.001) { alert(`Only ${remaining.toLocaleString()} bu of this haul is still unallocated.`); return; }
+        // Compared in whole cents, the same way the box was pre-filled and the amount is saved.
+        // A ticket's bushels often run past two decimals (68,980 lb / 60 = 1,149.6667), so
+        // the pre-filled 1,149.67 has to be accepted.
+        if (Math.round(amt * 100) > Math.round(remaining * 100)) { alert(`Only ${(Math.round(remaining * 100) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 })} bu of this haul is still unallocated.`); return; }
         assignToContract(h.haulId, c.id, Math.round(amt * 100) / 100);
       });
       row.appendChild(btn);
@@ -2955,7 +2962,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           const now = allHauls.find((x) => x.haulId === h.haulId);
           if (!now || !contractsLoaded) return "";
           const sp = haulSplit(now);
-          return sp.parts.length > 0 && (sp.remaining > 0.001 || sp.allocated > sp.total + 0.001)
+          return sp.parts.length > 0 && (sp.remaining > 0.001 || sp.allocated > sp.total + 0.006)
             ? "check the Contracts tab: this load's contract amounts no longer match its ticket" : "";
         },
       });
@@ -4505,10 +4512,17 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         return haulSortDir === "asc" ? cmp : -cmp;
       });
 
+      // A ticket number on two or more hauls anywhere in the data (not just the rows
+      // showing under the current filters) marks all of them as duplicates.
+      const dupKey = (r) => { const t = String(r.ticketNumber || "").trim().toUpperCase(); return t && t !== "—" ? t : null; };
+      const dupCounts = new Map();
+      allHauls.forEach((r) => { const k = dupKey(r); if (k) dupCounts.set(k, (dupCounts.get(k) || 0) + 1); });
+
       haulsRowsEl.innerHTML = "";
       rows.forEach((r) => {
         const tr = document.createElement("tr");
-        tr.className = "haul-row";
+        const dupCount = dupKey(r) ? dupCounts.get(dupKey(r)) : 0;
+        tr.className = "haul-row" + (dupCount > 1 ? " dup-ticket" : "");
         const expanded = expandedHauls.has(r.haulId);
         const time = r.departed_at ? new Date(r.departed_at).toLocaleString() : "—";
         const checkBadge = `<span class="badge badge-${r.checkStatus}">${escapeHtml(r.checkLabel)}</span>`;
@@ -4530,6 +4544,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           <td>${r.photoPath ? `<button class="photo-link" data-path="${escapeHtml(r.photoPath)}">${/\.pdf$/i.test(r.photoPath) ? "View PDF" : "View photo"}</button>` : "—"}</td>
         `;
         if (r.arithmeticCheck && r.arithmeticCheck.startsWith("fail")) tr.title = r.arithmeticCheck;
+        if (dupCount > 1) tr.title = `Ticket ${r.ticketNumber} has been entered on ${dupCount} hauls` + (tr.title ? " · " + tr.title : "");
         tr.addEventListener("click", (e) => {
           if (e.target.closest(".photo-link")) return; // let the photo button's own handler run instead
           if (expandedHauls.has(r.haulId)) expandedHauls.delete(r.haulId);
