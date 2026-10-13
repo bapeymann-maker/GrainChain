@@ -291,6 +291,10 @@
           <button id="dash-month-btn" class="view-btn" data-period="month">Last 30 days</button>
           <button id="dash-ytd-btn" class="view-btn" data-period="ytd">YTD</button>
         </div>
+        <div style="margin-bottom:16px;">
+          <button id="dash-unsettled-btn" class="view-btn" data-role="unsettled-btn" aria-expanded="false">Unsettled loads by buyer</button>
+        </div>
+        <div id="unsettled-panel" data-role="unsettled-panel" style="display:none;margin-bottom:20px;"></div>
         <div id="dash-content"></div>
       </div>
 
@@ -324,7 +328,6 @@
     const CONFIG_PROBLEM = /YOUR-|PASTE-/.test(SUPABASE_URL + SUPABASE_ANON_KEY)
       ? "This page isn't connected to Supabase yet: near the top of owner.html, paste your project's anon key (Supabase -> Project Settings -> API) in place of YOUR-ANON-KEY, then reload."
       : null;
-      
 
     const loginView = document.getElementById("login-view");
     const logView = document.getElementById("log-view");
@@ -384,6 +387,7 @@
     let contractsLoaded = false, settlementsLoaded = false;
     const expandedContracts = new Set();
     const expandedSettlements = new Set();
+    let unsettledOpen = false; // the dashboard's "Unsettled loads by buyer" list is showing
     let dashboardPeriod = "day"; // "day" | "week" | "month" | "ytd" — week/month are rolling 7/30 days, not calendar
 
     // organic contract  <- organic-status hauls of that crop
@@ -817,6 +821,7 @@
       if (mode === "dashboard") {
         await Promise.all([ensureLoads(), ensureHauls(), ensureContracts(), ensureSettlements()]);
         await renderDashboard();
+        await renderUnsettled();
         return; // renderDashboard draws dash-content itself; skip the generic render() below
       }
       render();
@@ -828,6 +833,12 @@
         document.querySelectorAll("#dash-period-row button[data-period]").forEach((b) => b.classList.toggle("active-view", b === btn));
         renderDashboard();
       });
+    });
+
+    document.getElementById("dash-unsettled-btn").addEventListener("click", async () => {
+      unsettledOpen = !unsettledOpen;
+      await Promise.all([ensureDestinations(), ensureHauls(), ensureSettlements()]);
+      await renderUnsettled();
     });
 
     viewLoadsBtn.addEventListener("click", () => switchView("loads"));
@@ -4204,6 +4215,59 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           const { error } = await supabase.from("partner_settlements").insert({ partner_id: partnerId, amount });
           if (error) { alert("Could not mark settled: " + error.message); return; }
           await renderDashboard();
+        });
+      });
+    }
+
+
+    // Dashboard: loads (tickets) that are not yet on a settlement, grouped under each buyer (A to Z).
+    // Uses the same rule as the settlement "add loads" list: the load has a ticket and still has
+    // something that can go on a settlement. A load split across contracts counts once, with only
+    // the bushels still unsettled.
+    function unsettledByBuyer() {
+      const groups = new Map(); // destinationId|"" -> { destination_id, loads: [] }
+      allHauls.forEach((h) => {
+        if (h.checkStatus === "none") return;
+        const units = unsettledUnits(h);
+        if (units.length === 0) return;
+        const net = (h._ticket && h._ticket.net_bushels) || 0;
+        const left = units.some((u) => u.kind === "whole") ? net : units.reduce((sum, u) => sum + (u.bushels || 0), 0);
+        const key = h.destinationId || "";
+        if (!groups.has(key)) groups.set(key, { destination_id: h.destinationId || null, loads: [] });
+        groups.get(key).loads.push({ h, left });
+      });
+      return orderByBuyer([...groups.values()]);
+    }
+    async function renderUnsettled() {
+      const btn = document.getElementById("dash-unsettled-btn");
+      const panel = document.getElementById("unsettled-panel");
+      if (!btn || !panel) return;
+      const groups = unsettledByBuyer();
+      const total = groups.reduce((n, g) => n + g.loads.length, 0);
+      const totalBu = groups.reduce((n, g) => n + g.loads.reduce((m, x) => m + x.left, 0), 0);
+      btn.textContent = `Unsettled loads by buyer (${total})`;
+      btn.classList.toggle("active-view", unsettledOpen);
+      btn.setAttribute("aria-expanded", unsettledOpen ? "true" : "false");
+      panel.style.display = unsettledOpen ? "" : "none";
+      panel.innerHTML = "";
+      if (!unsettledOpen) return;
+      const title = document.createElement("div");
+      title.className = "dash-section-title";
+      title.setAttribute("data-role", "unsettled-total");
+      title.textContent = total === 0 ? "Every load with a ticket is on a settlement." : `${plural(total, "load")} not on a settlement · ${fmtBuExact(totalBu)}`;
+      panel.appendChild(title);
+      groups.forEach((g) => {
+        const gBu = g.loads.reduce((m, x) => m + x.left, 0);
+        panel.appendChild(buyerHeading(g.destination_id, `${plural(g.loads.length, "load")} · ${fmtBuExact(gBu)}`));
+        sortByTicketNumber(g.loads, (x) => x.h.ticketNumber).forEach(({ h, left }) => {
+          const row = document.createElement("div");
+          row.className = "meta";
+          row.setAttribute("data-role", "unsettled-load");
+          row.setAttribute("data-haul", String(h.haulId));
+          row.style.padding = "3px 0";
+          const net = (h._ticket && h._ticket.net_bushels) || 0;
+          row.textContent = `${haulSummary(h)}${Math.abs(left - net) > 0.001 ? ` · ${fmtBuExact(left)} of ${fmtBuExact(net)} still unsettled` : ` · ${fmtBuExact(net)}`}`;
+          panel.appendChild(row);
         });
       });
     }
