@@ -117,6 +117,20 @@
     .badge-unpaid { color: #E2812B; background: #3A250D; }
     .dash-section-title { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
     .dash-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-bottom: 8px; }
+    .grain-card { min-width: 300px; }
+    .grain-row { margin-bottom: 12px; }
+    .grain-label { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; margin-bottom: 4px; flex-wrap: wrap; }
+    .grain-track { position: relative; height: 18px; border-radius: 4px; background: var(--panel); border: 1px solid var(--border); overflow: hidden; }
+    .grain-total, .grain-done { position: absolute; left: 0; top: 0; bottom: 0; }
+    .grain-total.green { background: rgba(79, 176, 90, 0.32); }
+    .grain-done.green { background: #4FB05A; }
+    .grain-total.blue { background: rgba(90, 169, 230, 0.32); }
+    .grain-done.blue { background: #5AA9E6; }
+    .grain-swatch { display: inline-block; width: 18px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+    .grain-swatch.green { background: #4FB05A; }
+    .grain-swatch.green.total { background: rgba(79, 176, 90, 0.32); border: 1px solid #4FB05A; }
+    .grain-swatch.blue { background: #5AA9E6; }
+    .grain-swatch.blue.total { background: rgba(90, 169, 230, 0.32); border: 1px solid #5AA9E6; }
     .dash-card { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
     .dash-card-title { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 8px; }
     .dash-stat-row { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 2px; }
@@ -178,6 +192,7 @@
       <label id="hauls-diff-wrap" style="display:none;align-items:center;gap:6px;font-size:13px;cursor:pointer;" title="Only the tickets where the driver's bushels and the AI's reading aren't the same — the ones that make the two totals disagree"><input type="checkbox" id="hauls-diff-only" /> Differences only</label>
       <button id="view-dashboard-btn" class="view-btn">Dashboard</button>
       <button id="view-harvest-btn" class="view-btn">Harvest</button>
+      <button id="view-yield-btn" class="view-btn">Yield</button>
       <button id="view-affidavits-btn" class="view-btn">Affidavits</button>
       <button id="view-rigs-btn" class="view-btn">Rigs</button>
       <button id="view-editlog-btn" class="view-btn">Edit log</button>
@@ -302,6 +317,10 @@
         <div id="harvest-content"></div>
       </div>
 
+      <div id="yield-view" style="display:none;">
+        <div id="yield-content"></div>
+      </div>
+
       <div id="affidavits-view" style="display:none;">
         <div id="affidavits-content"></div>
       </div>
@@ -350,11 +369,13 @@
     const viewSettlementsBtn = document.getElementById("view-settlements-btn");
     const viewDashboardBtn = document.getElementById("view-dashboard-btn");
     const viewHarvestBtn = document.getElementById("view-harvest-btn");
+    const viewYieldBtn = document.getElementById("view-yield-btn");
     const viewAffidavitsBtn = document.getElementById("view-affidavits-btn");
     const viewRigsBtn = document.getElementById("view-rigs-btn");
     const viewEditLogBtn = document.getElementById("view-editlog-btn");
     const dashboardView = document.getElementById("dashboard-view");
     const harvestView = document.getElementById("harvest-view");
+    const yieldView = document.getElementById("yield-view");
     const affidavitsView = document.getElementById("affidavits-view");
     const rigsView = document.getElementById("rigs-view");
     const editLogView = document.getElementById("editlog-view");
@@ -776,8 +797,8 @@
     haulsCsvBtnEl.addEventListener("click", downloadHaulsCsv);
     haulsDiffOnlyEl.addEventListener("change", render);
 
-    const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn, dashboard: viewDashboardBtn, harvest: viewHarvestBtn, affidavits: viewAffidavitsBtn, rigs: viewRigsBtn, editlog: viewEditLogBtn };
-    const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView, dashboard: dashboardView, harvest: harvestView, affidavits: affidavitsView, rigs: rigsView, editlog: editLogView };
+    const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn, dashboard: viewDashboardBtn, harvest: viewHarvestBtn, yield: viewYieldBtn, affidavits: viewAffidavitsBtn, rigs: viewRigsBtn, editlog: viewEditLogBtn };
+    const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView, dashboard: dashboardView, harvest: harvestView, yield: yieldView, affidavits: affidavitsView, rigs: rigsView, editlog: editLogView };
 
     async function ensureContracts() {
       if (!contractsLoaded) { await ensureDestinations(); await ensureHauls(); await fetchContracts(); }
@@ -808,6 +829,7 @@
 
       if (mode === "hauls" && !haulsLoaded) await fetchHauls();
       if (mode === "harvest") await ensureHarvestFields();
+      if (mode === "yield") await ensureYield();
       if (mode === "rigs") await ensureRigs();
       if (mode === "editlog") await fetchEditLog();
       if (mode === "hauls") await ensureAffidavits();
@@ -848,6 +870,7 @@
     viewSettlementsBtn.addEventListener("click", () => switchView("settlements"));
     viewDashboardBtn.addEventListener("click", () => switchView("dashboard"));
     viewHarvestBtn.addEventListener("click", () => switchView("harvest"));
+    viewYieldBtn.addEventListener("click", () => switchView("yield"));
     viewAffidavitsBtn.addEventListener("click", () => switchView("affidavits"));
     viewRigsBtn.addEventListener("click", () => switchView("rigs"));
     viewEditLogBtn.addEventListener("click", () => switchView("editlog"));
@@ -953,6 +976,8 @@
         renderSettlements();
       } else if (viewMode === "harvest") {
         renderHarvest();
+      } else if (viewMode === "yield") {
+        renderYield();
       } else if (viewMode === "affidavits") {
         renderAffidavits();
       } else if (viewMode === "rigs") {
@@ -3906,6 +3931,305 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
     }
 
     // ---------------------------------------------------------------------
+    // Yield: planned and actual bushels per acre, for each field, each season.
+    // The Yield tab edits them; the Dashboard turns them into bars (projected
+    // and harvested bushels per crop, next to contracted and delivered).
+    // ---------------------------------------------------------------------
+    const YIELD_CROPS = ["Corn", "Soybeans", "Oats"];
+    const YIELD_EXCLUDED_OPERATION = "LB Pork"; // tracked for harvest progress only, not for grain
+    let yieldFields = [];
+    let yieldRows = [];
+    let yieldLoaded = false;
+    let yieldError = null; // set when the field_yields table isn't there yet
+    let yieldSeason = new Date().getFullYear();
+    let yieldSearch = "";
+
+    async function fetchYield() {
+      statusLine.textContent = "Loading…";
+      const f = await supabase.from("fields").select("id,name,acres,crop,operation").order("name", { ascending: true });
+      if (f.error) { statusLine.textContent = "Error loading fields: " + f.error.message; return; }
+      yieldFields = f.data || [];
+      const y = await supabase.from("field_yields").select("*");
+      yieldError = y.error ? y.error.message : null;
+      yieldRows = y.error ? [] : y.data || [];
+      yieldLoaded = true;
+      statusLine.textContent = `${yieldFields.length} fields`;
+    }
+    async function ensureYield() {
+      if (!yieldLoaded) await fetchYield();
+    }
+
+    const normYieldCrop = (c) => (c === "Beans" ? "Soybeans" : YIELD_CROPS.includes(c) ? c : null);
+    const yieldFieldList = () => yieldFields.filter((f) => f.operation !== YIELD_EXCLUDED_OPERATION);
+    const yieldRowOf = (fieldId, season) => yieldRows.find((r) => String(r.field_id) === String(fieldId) && r.season === season) || null;
+    // The crop a field is in for a season: the one chosen on the Yield tab, else the crop on the field itself.
+    const yieldCropOf = (f, season) => {
+      const r = yieldRowOf(f.id, season);
+      return (r && normYieldCrop(r.crop)) || normYieldCrop(f.crop);
+    };
+    const numOrNull = (v) => (v == null || v === "" || isNaN(Number(v)) ? null : Number(v));
+    // Average of this field's ACTUAL yields in earlier seasons, same crop only.
+    function yieldHistory(f, season) {
+      const crop = yieldCropOf(f, season);
+      const past = yieldRows.filter((r) => String(r.field_id) === String(f.id) && r.season < season && numOrNull(r.actual_bu_ac) != null && (!crop || !normYieldCrop(r.crop) || normYieldCrop(r.crop) === crop));
+      if (past.length === 0) return null;
+      return { avg: past.reduce((s, r) => s + Number(r.actual_bu_ac), 0) / past.length, years: past.length };
+    }
+    // Totals by crop for a season. Projected = the actual yield where one is in, else the planned yield —
+    // so as fields are harvested the projection firms up, and the harvested part fills in the projected bar.
+    function yieldTotals(season) {
+      const out = {};
+      YIELD_CROPS.forEach((c) => (out[c] = { fields: 0, acres: 0, projected: 0, actual: 0, missing: 0 }));
+      yieldFieldList().forEach((f) => {
+        const crop = yieldCropOf(f, season);
+        if (!crop) return;
+        const acres = numOrNull(f.acres) || 0;
+        const r = yieldRowOf(f.id, season);
+        const planned = r ? numOrNull(r.planned_bu_ac) : null;
+        const actual = r ? numOrNull(r.actual_bu_ac) : null;
+        const t = out[crop];
+        t.fields += 1;
+        t.acres += acres;
+        if (actual != null) { t.actual += acres * actual; t.projected += acres * actual; }
+        else if (planned != null) t.projected += acres * planned;
+        else t.missing += 1;
+      });
+      return out;
+    }
+    const fmtBuInt = (n) => Math.round(n).toLocaleString();
+    const fmtYield = (n) => (n == null ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 1 }));
+
+    async function saveYield(f, patch) {
+      const row = yieldRowOf(f.id, yieldSeason);
+      const crop = (row && normYieldCrop(row.crop)) || normYieldCrop(f.crop);
+      const payload = { field_id: f.id, season: yieldSeason, ...(crop ? { crop } : {}), ...patch };
+      const { data, error } = await supabase.from("field_yields").upsert(payload, { onConflict: "field_id,season" }).select();
+      if (error || !data || data.length === 0) throw new Error(error ? error.message : "Nothing was saved — check that add-field-yields.sql has been run");
+      const saved = data[0];
+      const i = yieldRows.findIndex((r) => String(r.field_id) === String(f.id) && r.season === yieldSeason);
+      if (i >= 0) yieldRows[i] = saved; else yieldRows.push(saved);
+      return saved;
+    }
+
+    function renderYield() {
+      const root = document.getElementById("yield-content");
+      root.innerHTML = "";
+      if (yieldError) {
+        root.innerHTML = `<div class="item-card" data-role="yield-missing">The yield table isn't set up yet (${escapeHtml(yieldError)}). Run <b>add-field-yields.sql</b> in the Supabase SQL Editor, then reload.</div>`;
+        return;
+      }
+      const thisYear = new Date().getFullYear();
+      const seasons = [...new Set([thisYear, thisYear + 1, yieldSeason, ...yieldRows.map((r) => r.season)])].sort((a, b) => b - a);
+
+      const bar = document.createElement("div");
+      bar.style.cssText = "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px;";
+      const seasonSel = document.createElement("select");
+      seasonSel.setAttribute("data-role", "yield-season");
+      seasonSel.title = "Season";
+      seasons.forEach((y) => { const o = document.createElement("option"); o.value = String(y); o.textContent = `${y} season`; seasonSel.appendChild(o); });
+      seasonSel.value = String(yieldSeason);
+      seasonSel.addEventListener("change", () => { yieldSeason = Number(seasonSel.value); renderYield(); });
+      const search = document.createElement("input");
+      search.type = "search";
+      search.placeholder = "Find a field…";
+      search.setAttribute("data-role", "yield-search");
+      search.value = yieldSearch;
+      search.addEventListener("input", () => { yieldSearch = search.value; paintRows(); });
+      const note = document.createElement("span");
+      note.className = "meta";
+      note.textContent = `${YIELD_EXCLUDED_OPERATION} fields are left out. Type a yield in bushels per acre; it saves when you leave the box.`;
+      bar.append(seasonSel, search, note);
+      root.appendChild(bar);
+
+      const summary = document.createElement("div");
+      summary.className = "dash-grid";
+      summary.setAttribute("data-role", "yield-summary");
+      summary.style.marginBottom = "16px";
+      root.appendChild(summary);
+
+      const wrap = document.createElement("div");
+      wrap.style.overflowX = "auto";
+      const table = document.createElement("table");
+      table.innerHTML = `<thead><tr>
+        <th style="cursor:default;">Field</th><th style="cursor:default;">Acres</th><th style="cursor:default;">Crop</th>
+        <th style="cursor:default;">Planned bu/ac</th><th style="cursor:default;">Past seasons</th>
+        <th style="cursor:default;">Actual bu/ac</th><th style="cursor:default;">Projected bu</th><th style="cursor:default;">Harvested bu</th><th style="cursor:default;"></th>
+      </tr></thead>`;
+      const tbody = document.createElement("tbody");
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      root.appendChild(wrap);
+
+      function paintSummary() {
+        const t = yieldTotals(yieldSeason);
+        summary.innerHTML = "";
+        YIELD_CROPS.forEach((crop) => {
+          const c = t[crop];
+          if (c.fields === 0) return;
+          const card = document.createElement("div");
+          card.className = "dash-card";
+          card.setAttribute("data-role", "yield-summary-card");
+          card.setAttribute("data-crop", crop);
+          card.innerHTML = `<div class="dash-card-title">${escapeHtml(crop)}</div>
+            <div class="meta">${c.fields} field${c.fields === 1 ? "" : "s"} · ${fmtAcres(c.acres)} acres</div>
+            <div class="dash-stat-row"><span>Projected </span><span class="driver-val" data-role="sum-projected">${fmtBuInt(c.projected)} bu</span></div>
+            <div class="dash-stat-row"><span>Harvested </span><span class="ai-val" data-role="sum-actual">${fmtBuInt(c.actual)} bu</span></div>
+            ${c.missing > 0 ? `<div class="meta" data-role="sum-missing">${c.missing} field${c.missing === 1 ? "" : "s"} with no yield yet</div>` : ""}`;
+          summary.appendChild(card);
+        });
+        if (!summary.firstChild) summary.innerHTML = `<div class="meta">Pick a crop for the fields below to see totals.</div>`;
+      }
+
+      function buildRow(f) {
+        const tr = document.createElement("tr");
+        tr.setAttribute("data-role", "yield-row");
+        tr.setAttribute("data-field", String(f.id));
+        const td = () => tr.appendChild(document.createElement("td"));
+        const name = td(); name.textContent = f.name;
+        const acres = td(); acres.textContent = f.acres != null ? fmtAcres(Number(f.acres)) : "—";
+        const cropTd = td();
+        const cropSel = document.createElement("select");
+        cropSel.setAttribute("data-role", "yield-crop");
+        cropSel.innerHTML = `<option value="">Pick…</option>` + YIELD_CROPS.map((c) => `<option value="${c}">${c}</option>`).join("");
+        cropTd.appendChild(cropSel);
+        const plannedTd = td();
+        const planned = document.createElement("input");
+        planned.type = "number"; planned.min = "0"; planned.step = "any"; planned.inputMode = "decimal";
+        planned.style.width = "90px";
+        planned.setAttribute("data-role", "yield-planned");
+        const avgBtn = document.createElement("button");
+        avgBtn.className = "small-btn";
+        avgBtn.setAttribute("data-role", "yield-use-avg");
+        avgBtn.style.marginLeft = "6px";
+        plannedTd.append(planned, avgBtn);
+        const histTd = td(); histTd.setAttribute("data-role", "yield-history"); histTd.className = "meta";
+        const actualTd = td();
+        const actual = document.createElement("input");
+        actual.type = "number"; actual.min = "0"; actual.step = "any"; actual.inputMode = "decimal";
+        actual.style.width = "90px";
+        actual.setAttribute("data-role", "yield-actual");
+        actualTd.appendChild(actual);
+        const projTd = td(); projTd.setAttribute("data-role", "yield-projected");
+        const harvTd = td(); harvTd.setAttribute("data-role", "yield-harvested");
+        const statusTd = td(); statusTd.setAttribute("data-role", "yield-status"); statusTd.className = "meta";
+
+        function paint() {
+          const r = yieldRowOf(f.id, yieldSeason);
+          const crop = yieldCropOf(f, yieldSeason);
+          cropSel.value = crop || "";
+          planned.value = r && numOrNull(r.planned_bu_ac) != null ? String(r.planned_bu_ac) : "";
+          actual.value = r && numOrNull(r.actual_bu_ac) != null ? String(r.actual_bu_ac) : "";
+          const hist = yieldHistory(f, yieldSeason);
+          histTd.textContent = hist ? `avg ${fmtYield(hist.avg)} (${hist.years} season${hist.years === 1 ? "" : "s"})` : "—";
+          avgBtn.style.display = hist ? "" : "none";
+          avgBtn.textContent = hist ? `Use ${fmtYield(Math.round(hist.avg * 10) / 10)}` : "";
+          avgBtn.title = "Fill the planned yield with this field's average from past seasons";
+          const ac = numOrNull(f.acres) || 0;
+          const p = r ? numOrNull(r.planned_bu_ac) : null;
+          const a = r ? numOrNull(r.actual_bu_ac) : null;
+          projTd.textContent = a != null ? fmtBuInt(ac * a) : p != null ? fmtBuInt(ac * p) : "—";
+          harvTd.textContent = a != null ? fmtBuInt(ac * a) : "—";
+          tr.style.opacity = crop ? "" : "0.75";
+        }
+        const setStatus = (text, bad) => { statusTd.textContent = text; statusTd.style.color = bad ? "var(--danger)" : ""; };
+        async function commit(patch, label) {
+          setStatus("Saving…");
+          try {
+            await saveYield(f, patch);
+            setStatus(label || "Saved");
+          } catch (err) {
+            setStatus("Not saved: " + err.message, true);
+          }
+          paint();
+          paintSummary();
+        }
+        function yieldInput(input, column) {
+          input.addEventListener("change", async () => {
+            const raw = input.value.trim();
+            const v = raw === "" ? null : Number(raw);
+            if (v != null && (isNaN(v) || v < 0)) { setStatus("Enter a yield of 0 or more", true); paint(); return; }
+            if (v != null && !yieldCropOf(f, yieldSeason)) { setStatus("Pick the crop first", true); paint(); return; }
+            await commit({ [column]: v });
+          });
+        }
+        yieldInput(planned, "planned_bu_ac");
+        yieldInput(actual, "actual_bu_ac");
+        cropSel.addEventListener("change", () => commit({ crop: cropSel.value || null }));
+        avgBtn.addEventListener("click", () => {
+          const hist = yieldHistory(f, yieldSeason);
+          if (hist) commit({ planned_bu_ac: Math.round(hist.avg * 10) / 10 }, "Saved (past-season average)");
+        });
+        paint();
+        return tr;
+      }
+
+      const rows = new Map();
+      function paintRows() {
+        const q = yieldSearch.trim().toLowerCase();
+        tbody.innerHTML = "";
+        const list = [...yieldFieldList()].sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { numeric: true }));
+        list.forEach((f) => {
+          if (q && !(f.name || "").toLowerCase().includes(q)) return;
+          if (!rows.has(f.id)) rows.set(f.id, buildRow(f));
+          tbody.appendChild(rows.get(f.id));
+        });
+        if (!tbody.firstChild) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td colspan="9" class="meta">${q ? "No field matches that." : "No fields on file."}</td>`;
+          tbody.appendChild(tr);
+        }
+      }
+      paintSummary();
+      paintRows();
+    }
+
+    // Dashboard bars: for each crop, a translucent green bar for the projected total with solid green for what
+    // has actually been harvested, and a translucent blue bar for contracted bushels with solid blue for what has
+    // been sold and delivered. Both pairs share one scale per crop so they can be compared at a glance.
+    function grainPositionHtml() {
+      const totals = yieldTotals(yieldSeason);
+      const contracted = {}, delivered = {};
+      allContracts.forEach((c) => {
+        const crop = normYieldCrop(c.crop);
+        if (!crop) return;
+        contracted[crop] = (contracted[crop] || 0) + (Number(c.bushels) || 0);
+        delivered[crop] = (delivered[crop] || 0) + (Number(c.delivered_bushels) || 0);
+      });
+      const pct = (n, max) => (max > 0 ? Math.max(0, Math.min(100, (n / max) * 100)) : 0);
+      let cards = "";
+      let missingTotal = 0;
+      YIELD_CROPS.forEach((crop) => {
+        const t = totals[crop];
+        const proj = t.projected, act = t.actual, con = contracted[crop] || 0, del = delivered[crop] || 0;
+        missingTotal += t.missing;
+        if (proj + act + con + del <= 0) return;
+        const max = Math.max(proj, act, con, del);
+        const line = (cls, label, total, done, totalWord, doneWord, a, b) => `
+          <div class="grain-row" data-role="grain-row" data-kind="${cls}">
+            <div class="grain-label"><span>${label}</span><span class="meta">${fmtBuInt(done)} bu ${doneWord}${total > 0 ? ` of ${fmtBuInt(total)} ${totalWord} (${Math.round((done / total) * 100)}%)` : ` · nothing ${totalWord} yet`}</span></div>
+            <div class="grain-track"><div class="grain-total ${cls}" data-role="grain-total" style="width:${pct(total, max)}%;"></div><div class="grain-done ${cls}" data-role="grain-done" style="width:${pct(done, max)}%;"></div></div>
+          </div>`;
+        cards += `
+          <div class="dash-card grain-card" data-role="grain-card" data-crop="${escapeHtml(crop)}" data-projected="${Math.round(proj)}" data-harvested="${Math.round(act)}" data-contracted="${Math.round(con)}" data-delivered="${Math.round(del)}">
+            <div class="dash-card-title">${escapeHtml(crop)}</div>
+            ${line("green", "Harvest", proj, act, "projected", "harvested")}
+            ${line("blue", "Sales", con, del, "contracted", "delivered")}
+            ${con > proj && proj > 0 ? `<div class="meta" data-role="grain-over" style="color:var(--danger);">Contracted ${fmtBuInt(con - proj)} bu more than projected</div>` : ""}
+          </div>`;
+      });
+      let html = `<div class="dash-section-title" data-role="grain-title">Grain position — ${escapeHtml(String(yieldSeason))} season</div>`;
+      html += `<div class="legend-row" style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;margin-bottom:10px;color:var(--text-muted);">
+        <span class="legend-chip"><span class="grain-swatch green total"></span>Projected</span>
+        <span class="legend-chip"><span class="grain-swatch green"></span>Harvested</span>
+        <span class="legend-chip"><span class="grain-swatch blue total"></span>Contracted</span>
+        <span class="legend-chip"><span class="grain-swatch blue"></span>Sold &amp; delivered</span></div>`;
+      if (yieldError) html += `<div class="meta" data-role="grain-note" style="margin-bottom:12px;">Yields aren't available yet — run add-field-yields.sql (${escapeHtml(yieldError)}).</div>`;
+      html += cards ? `<div class="dash-grid" data-role="grain-grid" style="margin-bottom:8px;">${cards}</div>` : `<div class="meta" data-role="grain-note" style="margin-bottom:12px;">Nothing to show yet — add planned yields on the Yield tab, or contracts on the Contracts tab.</div>`;
+      if (missingTotal > 0 && !yieldError) html += `<div class="meta" data-role="grain-missing" style="margin-bottom:20px;">${missingTotal} field${missingTotal === 1 ? " has" : "s have"} a crop but no planned yield yet, so ${missingTotal === 1 ? "it isn't" : "they aren't"} in the projected bars.</div>`;
+      return html + `<div style="margin-bottom:24px;"></div>`;
+    }
+
+    // ---------------------------------------------------------------------
     // Dashboard
     // ---------------------------------------------------------------------
 
@@ -3926,6 +4250,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
 
     async function renderDashboard() {
       const bounds = periodBounds(dashboardPeriod);
+      await ensureYield(); // planned/actual yields for the Grain position bars at the top
 
       // ---- Production ("brought in from fields") by crop, in period.
       // Two sources: field-to-bin loads (the usual path), AND hauls that
@@ -4012,7 +4337,8 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const statusLine = (byStatus) => Object.entries(byStatus).map(([st, bu]) => `${st}: ${fmtBu(bu)}`).join(" · ") || "—";
       const periodLabel = { day: "today", week: "the last 7 days", month: "the last 30 days", ytd: "year to date" }[dashboardPeriod];
 
-      let html = `<div class="dash-section-title">Brought in from fields vs. delivered — ${escapeHtml(periodLabel)}</div>`;
+      let html = grainPositionHtml();
+      html += `<div class="dash-section-title">Brought in from fields vs. delivered — ${escapeHtml(periodLabel)}</div>`;
       if (crops.length === 0) {
         html += `<div style="color:var(--text-muted);font-size:13px;margin-bottom:20px;">Nothing recorded in this period.</div>`;
       } else {
