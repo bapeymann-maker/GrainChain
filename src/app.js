@@ -32,6 +32,17 @@ const TRUCKS = ["U1", "U2", "U3", "U4", "U5", "U6", "U7", "U8"];
 const TRUCK_BUSHELS = { U1: 1000, U2: 1000, U3: 1000, U4: 1000, U5: 1000, U6: 1000, U7: 1000, U8: 1000 };
 const CROPS = ["Corn", "Soybeans", "Oats"];
 
+// Farm sites a field load can go to, in the order they're shown. Danube and
+// Fairfax are left out on purpose — grain there arrives as an elevator delivery.
+const FIELD_DELIVERY_SITES = ["HOME", "MAU", "BEN'S", "FANCHER", "RYAN'S", "HANSON SILO"];
+const SITE_LABELS = { HOME: "Home", MAU: "Mau", "BEN'S": "Ben's", FANCHER: "Fancher", "RYAN'S": "Ryan's", "HANSON SILO": "Hanson Silo" };
+const siteLabel = (site) => SITE_LABELS[site] || site || "—";
+// bins can carry the older "Beans" spelling; crops everywhere else say "Soybeans"
+const binCrop = (c) => (c === "Beans" ? "Soybeans" : c || null);
+// the bins a field load may go into: storage or wet bins at one of the farm sites above
+const fieldDeliveryBins = () =>
+  state.bins.filter((b) => FIELD_DELIVERY_SITES.includes(b.site) && (b.bin_type === "storage" || b.bin_type === "wet") && b.active !== false);
+
 const COLORS = {
   ink: "#171B1E",
   panel: "#1F2529",
@@ -140,6 +151,7 @@ const state = {
 
   field: null,
   bin: null,
+  site: null, // farm site picked on the Bin Site step
   truck: null,
   truckMode: null, // "full" | "notFull" | "buffer"
   weight: "",
@@ -301,6 +313,7 @@ function logAnotherLoad() {
 function changeFieldAndBin() {
   state.field = null;
   state.bin = null;
+  state.site = null;
   state.cropChoice = null;
   clearTruckFields();
   setState({ screen: "crop" });
@@ -415,7 +428,7 @@ function homeScreen() {
 
   if (state.cropChoice && state.field && state.bin) {
     wrap.appendChild(
-      bigButton(`${state.field.name} → ${state.bin.name}`, {
+      bigButton(`${state.field.name} → ${state.bin.site && state.bin.site !== "HOME" ? siteLabel(state.bin.site) + " " : ""}${state.bin.name}`, {
         tone: "gold",
         sub: `Same as last load — ${state.cropChoice} — straight to truck`,
         onClick: () => setState({ screen: "truck" }),
@@ -426,7 +439,7 @@ function homeScreen() {
   wrap.appendChild(
     bigButton("Field delivery", {
       tone: state.cropChoice && state.field && state.bin ? "default" : "gold",
-      sub: "Pit → wet bin, at the home site",
+      sub: "Field → bin, at any farm site",
       onClick: () => setState({ screen: "crop" }),
     })
   );
@@ -713,11 +726,51 @@ function truckScreen() {
             return;
           }
         }
-        setState({ weightError: "", screen: "bin" });
+        setState({ weightError: "", screen: "site" });
       },
     })
   );
   wrap.appendChild(linkButton("← Back", () => setState({ screen: "field" })));
+  wrap.appendChild(cancelLoadButton());
+  return wrap;
+}
+
+function siteScreen() {
+  if (!state.field) {
+    setState({ screen: "field" });
+    return h("div");
+  }
+  const wrap = h("div", { style: "display:flex;flex-direction:column;gap:14px;" });
+  wrap.appendChild(h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.text};` }, "Which bin site?"));
+  const binsBySite = new Map();
+  fieldDeliveryBins().forEach((b) => binsBySite.set(b.site, (binsBySite.get(b.site) || 0) + 1));
+  if (binsBySite.size === 0) {
+    wrap.appendChild(
+      h(
+        "div",
+        { style: `border:1px dashed ${COLORS.border};border-radius:10px;padding:20px;color:${COLORS.textMuted};font-size:13px;text-align:center;` },
+        "No bins synced yet. Make sure this Chromebook has connected to the internet at least once since setup."
+      )
+    );
+  }
+  const lastSite = state.site || (state.bin && state.bin.site) || null;
+  FIELD_DELIVERY_SITES.forEach((site) => {
+    const n = binsBySite.get(site) || 0;
+    const selected = n > 0 && lastSite === site;
+    wrap.appendChild(
+      bigButton(siteLabel(site), {
+        tone: selected ? "gold" : "default",
+        sub: n === 0 ? "No bins synced for this site" : selected ? `Same as last load — ${n} bin${n === 1 ? "" : "s"}` : `${n} bin${n === 1 ? "" : "s"}`,
+        disabled: n === 0,
+        onClick: () => {
+          // a bin from a different site can't carry over
+          if (state.bin && state.bin.site !== site) state.bin = null;
+          setState({ site, screen: "bin" });
+        },
+      })
+    );
+  });
+  wrap.appendChild(linkButton("← Back", () => setState({ screen: "truck" })));
   wrap.appendChild(cancelLoadButton());
   return wrap;
 }
@@ -727,10 +780,14 @@ function binScreen() {
     setState({ screen: "field" });
     return h("div");
   }
+  if (!state.site) {
+    setState({ screen: "site" });
+    return h("div");
+  }
   const wrap = h("div", { style: "display:flex;flex-direction:column;gap:14px;" });
   wrap.appendChild(
     h("div", { style: "display:flex;align-items:center;gap:10px;" }, [
-      h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.text};` }, "Which bin?"),
+      h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.text};` }, `Which bin at ${siteLabel(state.site)}?`),
       badge(state.isBuffer ? "conventional" : state.field.status),
     ])
   );
@@ -752,17 +809,17 @@ function binScreen() {
   wrap.appendChild(bufferLabel);
   wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-top:-4px;` }, "Bins that can't take this load are grayed out and explain why."));
 
-  // Field delivery is specifically the home-site pit → wet bin flow, so
-  // only home-site storage/wet bins belong here — not Danube/Fairfax/other
-  // satellite sites, and not loadout or not-yet-built bins.
-  const homeBins = state.bins.filter((b) => b.site === "HOME" && (b.bin_type === "storage" || b.bin_type === "wet") && b.active !== false);
+  // Bins at the site picked on the previous step — storage or wet bins only,
+  // not loadout or not-yet-built bins. Danube and Fairfax never get here
+  // (they're elevator deliveries), see FIELD_DELIVERY_SITES.
+  const homeBins = fieldDeliveryBins().filter((b) => b.site === state.site);
 
   if (homeBins.length === 0) {
     wrap.appendChild(
       h(
         "div",
         { style: `border:1px dashed ${COLORS.border};border-radius:10px;padding:20px;color:${COLORS.textMuted};font-size:13px;text-align:center;` },
-        "No home-site bins synced yet. Make sure this Chromebook has connected to the internet at least once since setup."
+        `No ${siteLabel(state.site)} bins synced yet. Make sure this Chromebook has connected to the internet at least once since setup.`
       )
     );
   } else {
@@ -780,7 +837,7 @@ function binScreen() {
           : effectiveStatus === "transitional"
           ? b.status === "transitional" || b.status === "conventional"
           : b.status !== "organic");
-      const cropOk = isWetStaging || !b.crop || b.crop === state.cropChoice;
+      const cropOk = isWetStaging || !b.crop || binCrop(b.crop) === state.cropChoice;
       const compatible = statusOk && cropOk;
       const reason = !statusOk
         ? effectiveStatus === "organic" && b.status === "organic" && !b.affidavit
@@ -791,7 +848,7 @@ function binScreen() {
           ? "Reserved for organic grain"
           : ""
         : !cropOk
-        ? `Reserved for ${b.crop}`
+        ? `Reserved for ${binCrop(b.crop)}`
         : "";
       const selected = compatible && state.bin && state.bin.id === b.id;
       list.appendChild(
@@ -833,7 +890,7 @@ function binScreen() {
     wrap.appendChild(list);
   }
 
-  wrap.appendChild(linkButton("← Back", () => setState({ screen: "truck" })));
+  wrap.appendChild(linkButton("← Back", () => setState({ screen: "site" })));
   wrap.appendChild(cancelLoadButton());
   return wrap;
 }
@@ -858,6 +915,7 @@ function confirmScreen() {
     ],
     ...(moisture ? [["Moisture", `${moisture}%`]] : []),
     ...(testWeight ? [["Test weight", `${testWeight} lb/bu`]] : []),
+    ["Bin site", siteLabel(bin.site)],
     ["Destination bin", bin.name],
   ];
 
@@ -898,7 +956,7 @@ function successScreen() {
     )
   );
   wrap.appendChild(h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.text};` }, "Load logged"));
-  wrap.appendChild(h("div", { style: `font-size:14px;color:${COLORS.textMuted};text-align:center;` }, `${field.name} → ${bin.name}, ${worker.name}`));
+  wrap.appendChild(h("div", { style: `font-size:14px;color:${COLORS.textMuted};text-align:center;` }, `${field.name} → ${bin.site && bin.site !== "HOME" ? siteLabel(bin.site) + " " : ""}${bin.name}, ${worker.name}`));
   wrap.appendChild(
     h("div", { style: "display:flex;gap:10px;width:100%;max-width:360px;" }, [
       bigButton("Log another load", { tone: "gold", sub: "Next truck, same field and bin", onClick: logAnotherLoad }),
@@ -1476,8 +1534,8 @@ async function stopDryerRun() {
 }
 
 function stepDots() {
-  const stepIndex = { login: 0, home: 0, crop: 1, field: 2, truck: 3, bin: 4, confirm: 5, success: 5 }[state.screen];
-  const total = 6;
+  const stepIndex = { login: 0, home: 0, crop: 1, field: 2, truck: 3, site: 4, bin: 5, confirm: 6, success: 6 }[state.screen];
+  const total = 7;
   const row = h("div", { style: "display:flex;gap:8px;padding:18px 28px 0;" });
   for (let i = 0; i < total; i++) {
     row.appendChild(h("div", { style: `height:4px;flex:1;border-radius:2px;background:${i <= stepIndex ? COLORS.gold : COLORS.border};` }));
@@ -1510,7 +1568,7 @@ function logPanel() {
         h("span", {}, "·"),
         effectiveStatus ? badge(effectiveStatus) : h("span", {}, "—"),
         h("span", {}, "·"),
-        h("span", {}, bin ? bin.name : entry.binId),
+        h("span", {}, bin ? `${bin.site && bin.site !== "HOME" ? siteLabel(bin.site) + " " : ""}${bin.name}` : entry.binId),
         !entry.synced ? h("span", { style: `color:${COLORS.amber};` }, "pending") : null,
         entry.isBuffer ? h("span", { style: `color:${COLORS.amber};` }, "buffer") : null,
       ])
@@ -1528,7 +1586,7 @@ function render() {
   });
   frame.appendChild(topBar());
   const isDryerScreen = state.screen.startsWith("dryer");
-  if (state.screen !== "login" && !isDryerScreen) frame.appendChild(stepDots()); // stepDots is specific to the field-delivery flow's 5 steps
+  if (state.screen !== "login" && !isDryerScreen) frame.appendChild(stepDots()); // stepDots is specific to the field-delivery flow's 7 steps
 
   const body = h("div", { style: "flex:1;padding:22px 28px 28px;display:flex;flex-direction:column;gap:16px;" });
   const screens = {
@@ -1537,6 +1595,7 @@ function render() {
     crop: cropScreen,
     field: fieldScreen,
     truck: truckScreen,
+    site: siteScreen,
     bin: binScreen,
     confirm: confirmScreen,
     success: successScreen,
@@ -1556,7 +1615,7 @@ function render() {
   // Scroll the pre-highlighted pick into view, but only on first arrival at
   // this screen — not on every re-render (e.g. tapping a status filter
   // shouldn't yank the scroll position back each time).
-  if (state.screen !== lastScreen && (state.screen === "field" || state.screen === "bin")) {
+  if (state.screen !== lastScreen && (state.screen === "field" || state.screen === "bin" || state.screen === "site")) {
     const selectedEl = root.querySelector('[data-selected="true"]');
     if (selectedEl) selectedEl.scrollIntoView({ block: "center", behavior: "auto" });
   }
