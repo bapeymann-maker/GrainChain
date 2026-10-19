@@ -3939,8 +3939,8 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
     // The Yield tab edits them; the Dashboard turns them into bars (projected
     // and harvested bushels per crop, next to contracted and delivered).
     // ---------------------------------------------------------------------
-    // The eight kinds of grain the farm tracks: a crop grown under a certification status.
-    // Chemical = conventional. (There is no Chemical-Oats: oats are only grown organic or in transition.)
+    // The twelve kinds of grain the farm tracks: a crop grown under a certification status.
+    // Chemical = conventional. (Oats, Peas and Sweet Corn have no Chemical kind: they are only grown organic or in transition.)
     const YIELD_CLASSES = [
       { label: "Chemical-Corn", crop: "Corn", status: "conventional" },
       { label: "Organic-Corn", crop: "Corn", status: "organic" },
@@ -3950,8 +3950,12 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       { label: "Transition-Soybeans", crop: "Soybeans", status: "transitional" },
       { label: "Organic-Oats", crop: "Oats", status: "organic" },
       { label: "Transition-Oats", crop: "Oats", status: "transitional" },
+      { label: "Organic-Peas", crop: "Peas", status: "organic" },
+      { label: "Transition-Peas", crop: "Peas", status: "transitional" },
+      { label: "Organic-Sweet Corn", crop: "Sweet Corn", status: "organic" },
+      { label: "Transition-Sweet Corn", crop: "Sweet Corn", status: "transitional" },
     ];
-    const YIELD_CROPS = ["Corn", "Soybeans", "Oats"];
+    const YIELD_CROPS = ["Corn", "Soybeans", "Oats", "Peas", "Sweet Corn"];
     const yieldClassLabel = (crop, status) => { const c = YIELD_CLASSES.find((x) => x.crop === crop && x.status === status); return c ? c.label : null; };
     const YIELD_EXCLUDED_OPERATION = "LB Pork"; // tracked for harvest progress only, not for grain
     let yieldFields = [];
@@ -3977,22 +3981,34 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       if (!yieldLoaded) await fetchYield();
     }
 
-    const normYieldCrop = (c) => (c === "Beans" ? "Soybeans" : YIELD_CROPS.includes(c) ? c : null);
+    const normYieldCrop = (c) => {
+      if (c === "Beans") return "Soybeans";
+      if (YIELD_CROPS.includes(c)) return c;
+      const k = String(c || "").trim().toLowerCase().replace(/\s+/g, " ");
+      if (k === "pea" || k === "peas") return "Peas";
+      if (k === "sweet corn" || k === "sweetcorn") return "Sweet Corn";
+      return null;
+    };
     const yieldFieldList = () => yieldFields.filter((f) => f.operation !== YIELD_EXCLUDED_OPERATION);
-    const yieldRowOf = (fieldId, season) => yieldRows.find((r) => String(r.field_id) === String(fieldId) && r.season === season) || null;
+    // A field can carry two plantings in one season: 1 = the main crop, 2 = a double crop planted after the first is harvested.
+    const yieldRowOf = (fieldId, season, pl = 1) => yieldRows.find((r) => String(r.field_id) === String(fieldId) && r.season === season && (Number(r.planting) || 1) === pl) || null;
+    // Acres actually planted: the figure typed for that planting, else the whole field.
+    const yieldAcresOf = (f, r) => { const a = r ? numOrNull(r.acres) : null; return a != null && a > 0 ? a : numOrNull(f.acres) || 0; };
     // The kind of grain a field is for a season (one of the eight above): the one chosen on the Yield tab,
     // else the crop and status on the field itself. Null when it isn't one of the eight (or isn't known).
-    const yieldClassOf = (f, season) => {
-      const r = yieldRowOf(f.id, season);
+    const yieldClassOf = (f, season, pl = 1) => {
+      const r = yieldRowOf(f.id, season, pl);
+      // A double crop is only ever what was picked for it; the field's own crop and status describe the main planting.
+      if (pl !== 1) { const c2 = r && normYieldCrop(r.crop); return c2 ? yieldClassLabel(c2, r.status) : null; }
       const crop = (r && normYieldCrop(r.crop)) || normYieldCrop(f.crop);
       const status = (r && r.crop && r.status) || f.status;
       return crop ? yieldClassLabel(crop, status) : null;
     };
-    const yieldCropOf = (f, season) => { const c = YIELD_CLASSES.find((x) => x.label === yieldClassOf(f, season)); return c ? c.crop : null; };
+    const yieldCropOf = (f, season, pl = 1) => { const c = YIELD_CLASSES.find((x) => x.label === yieldClassOf(f, season, pl)); return c ? c.crop : null; };
     const numOrNull = (v) => (v == null || v === "" || isNaN(Number(v)) ? null : Number(v));
     // Average of this field's ACTUAL yields in earlier seasons, same crop only (its status may have changed since).
-    function yieldHistory(f, season) {
-      const crop = yieldCropOf(f, season);
+    function yieldHistory(f, season, pl = 1) {
+      const crop = yieldCropOf(f, season, pl);
       const past = yieldRows.filter((r) => String(r.field_id) === String(f.id) && r.season < season && numOrNull(r.actual_bu_ac) != null && (!crop || !normYieldCrop(r.crop) || normYieldCrop(r.crop) === crop));
       if (past.length === 0) return null;
       return { avg: past.reduce((s, r) => s + Number(r.actual_bu_ac), 0) / past.length, years: past.length };
@@ -4012,32 +4028,35 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const out = {};
       YIELD_CLASSES.forEach((c) => (out[c.label] = { fields: 0, acres: 0, projected: 0, actual: 0, missing: 0 }));
       yieldFieldList().forEach((f) => {
-        const crop = yieldClassOf(f, season);
-        if (!crop) return;
-        const acres = numOrNull(f.acres) || 0;
-        const r = yieldRowOf(f.id, season);
-        const planned = r ? numOrNull(r.planned_bu_ac) : null;
-        const harvested = yieldHarvestedBu(r, acres);
-        const t = out[crop];
-        t.fields += 1;
-        t.acres += acres;
-        if (harvested != null) t.actual += harvested;
-        if (planned != null) t.projected += acres * planned;
-        else t.missing += 1;
+        [1, 2].forEach((pl) => { // the main crop, then a double crop if there is one
+          const crop = yieldClassOf(f, season, pl);
+          if (!crop) return;
+          const r = yieldRowOf(f.id, season, pl);
+          const acres = yieldAcresOf(f, r); // only the acres planted, which may be part of the field
+          const planned = r ? numOrNull(r.planned_bu_ac) : null;
+          const harvested = yieldHarvestedBu(r, acres);
+          const t = out[crop];
+          t.fields += 1;
+          t.acres += acres;
+          if (harvested != null) t.actual += harvested;
+          if (planned != null) t.projected += acres * planned;
+          else t.missing += 1;
+        });
       });
       return out;
     }
     const fmtBuInt = (n) => Math.round(n).toLocaleString();
     const fmtYield = (n) => (n == null ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 1 }));
 
-    async function saveYield(f, patch) {
-      const cls = YIELD_CLASSES.find((x) => x.label === yieldClassOf(f, yieldSeason));
-      const payload = { field_id: f.id, season: yieldSeason, ...(cls ? { crop: cls.crop, status: cls.status } : {}), ...patch };
-      const { data, error } = await supabase.from("field_yields").upsert(payload, { onConflict: "field_id,season" }).select();
+    async function saveYield(f, patch, pl = 1) {
+      const cls = YIELD_CLASSES.find((x) => x.label === yieldClassOf(f, yieldSeason, pl));
+      const payload = { field_id: f.id, season: yieldSeason, planting: pl, ...(cls ? { crop: cls.crop, status: cls.status } : {}), ...patch };
+      const { data, error } = await supabase.from("field_yields").upsert(payload, { onConflict: "field_id,season,planting" }).select();
+      if (error && (/'(planting|acres)' column|ON CONFLICT/i.test(error.message))) throw new Error("the database isn't set up for double crops and partial acres yet — run add-field-yields.sql in the Supabase SQL Editor (it also refreshes Supabase's schema cache), then reload this page");
       if (error && /actual_bu\b|schema cache/i.test(error.message) && /actual_bu\b/.test(error.message)) throw new Error("the database doesn't have the total-bushels column yet — run add-field-yields.sql in the Supabase SQL Editor (it also refreshes Supabase's schema cache), then reload this page");
       if (error || !data || data.length === 0) throw new Error(error ? error.message : "Nothing was saved — check that add-field-yields.sql has been run");
       const saved = data[0];
-      const i = yieldRows.findIndex((r) => String(r.field_id) === String(f.id) && r.season === yieldSeason);
+      const i = yieldRows.findIndex((r) => String(r.field_id) === String(f.id) && r.season === yieldSeason && (Number(r.planting) || 1) === pl);
       if (i >= 0) yieldRows[i] = saved; else yieldRows.push(saved);
       return saved;
     }
@@ -4052,6 +4071,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const thisYear = new Date().getFullYear();
       const seasons = [...new Set([thisYear, thisYear + 1, yieldSeason, ...yieldRows.map((r) => r.season)])].sort((a, b) => b - a);
 
+      const doubleOpen = new Set(); // fields whose double-crop row has been opened but not saved yet
       const bar = document.createElement("div");
       bar.style.cssText = "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px;";
       const seasonSel = document.createElement("select");
@@ -4072,7 +4092,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const sortSel = document.createElement("select");
       sortSel.setAttribute("data-role", "yield-sort");
       sortSel.title = "Sort the fields";
-      sortSel.innerHTML = `<option value="name">Sort: field name</option><option value="grain">Sort: grain (corn, soybeans, oats)</option>`;
+      sortSel.innerHTML = `<option value="name">Sort: field name</option><option value="grain">Sort: grain (corn, soybeans, oats, peas, sweet corn)</option>`;
       sortSel.value = yieldSort;
       sortSel.addEventListener("change", () => { yieldSort = sortSel.value; paintRows(); });
       bar.append(seasonSel, sortSel, search, note);
@@ -4088,7 +4108,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       wrap.style.overflowX = "auto";
       const table = document.createElement("table");
       table.innerHTML = `<thead><tr>
-        <th style="cursor:default;">Field</th><th style="cursor:default;">Acres</th><th data-role="yield-grain-head" style="cursor:pointer;" title="Click to sort by grain">Grain</th>
+        <th style="cursor:default;">Field</th><th style="cursor:default;" title="Acres planted to this grain. Leave empty for the whole field; type fewer when only part of the field was planted.">Acres planted</th><th data-role="yield-grain-head" style="cursor:pointer;" title="Click to sort by grain">Grain</th>
         <th style="cursor:default;">Planned bu/ac</th><th style="cursor:default;">Past seasons</th>
         <th style="cursor:default;">Actual bu/ac</th><th style="cursor:default;">Projected bu</th><th style="cursor:default;" title="Total dry bushels harvested from the field — type it and the bu/ac is worked out">Harvested dry bu</th><th style="cursor:default;"></th>
       </tr></thead>`;
@@ -4122,13 +4142,49 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         if (!summary.firstChild) summary.innerHTML = `<div class="meta">Pick the kind of grain for the fields below to see totals.</div>`;
       }
 
-      function buildRow(f) {
+      function buildRow(f, pl) {
         const tr = document.createElement("tr");
         tr.setAttribute("data-role", "yield-row");
         tr.setAttribute("data-field", String(f.id));
+        tr.setAttribute("data-planting", String(pl));
         const td = () => tr.appendChild(document.createElement("td"));
-        const name = td(); name.textContent = f.name;
-        const acres = td(); acres.textContent = f.acres != null ? fmtAcres(Number(f.acres)) : "—";
+        const fieldAcres = () => numOrNull(f.acres) || 0;
+        const rowNow = () => yieldRowOf(f.id, yieldSeason, pl);
+        const classNow = () => yieldClassOf(f, yieldSeason, pl);
+        const name = td();
+        let addBtn = null, removeBtn = null;
+        if (pl === 1) {
+          name.append(document.createTextNode(f.name + " "));
+          addBtn = document.createElement("button");
+          addBtn.className = "small-btn";
+          addBtn.setAttribute("data-role", "yield-add-double");
+          addBtn.textContent = "+ Double crop";
+          addBtn.title = "A second crop planted on this field after the first one is harvested (soybeans after peas, say)";
+          name.appendChild(addBtn);
+        } else {
+          const lbl = document.createElement("span");
+          lbl.className = "meta";
+          lbl.textContent = "↳ Double crop, planted after the first harvest ";
+          removeBtn = document.createElement("button");
+          removeBtn.className = "small-btn";
+          removeBtn.setAttribute("data-role", "yield-remove-double");
+          removeBtn.textContent = "Remove";
+          name.append(lbl, removeBtn);
+        }
+        const acresTd = td();
+        const acresIn = document.createElement("input");
+        acresIn.type = "number"; acresIn.min = "0"; acresIn.step = "any"; acresIn.inputMode = "decimal";
+        acresIn.style.width = "80px";
+        acresIn.setAttribute("data-role", "yield-acres");
+        acresIn.placeholder = f.acres != null ? fmtAcres(Number(f.acres)) : "acres";
+        acresIn.title = "Acres planted to this grain. Empty = the whole field.";
+        const acresOf = document.createElement("span");
+        acresOf.className = "meta";
+        acresOf.style.marginLeft = "4px";
+        acresOf.textContent = f.acres != null ? `of ${fmtAcres(Number(f.acres))}` : "";
+        acresTd.append(acresIn, acresOf);
+        // Acres planted right now, including what is typed in the box but not saved yet.
+        const curAcres = () => { const n = numOrNull(acresIn.value); return n != null && n > 0 ? n : fieldAcres(); };
         const cropTd = td();
         const cropSel = document.createElement("select");
         cropSel.setAttribute("data-role", "yield-crop");
@@ -4157,19 +4213,20 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         harvIn.type = "number"; harvIn.min = "0"; harvIn.step = "any"; harvIn.inputMode = "decimal";
         harvIn.style.width = "110px";
         harvIn.setAttribute("data-role", "yield-harvested-bu");
-        harvIn.title = "Total dry bushels harvested from this field — type it and the actual bu/ac is worked out";
+        harvIn.title = "Total dry bushels harvested from this planting — type it and the actual bu/ac is worked out";
         harvTd.appendChild(harvIn);
         const statusTd = td(); statusTd.setAttribute("data-role", "yield-status"); statusTd.className = "meta";
 
         function paint() {
-          const r = yieldRowOf(f.id, yieldSeason);
-          const crop = yieldClassOf(f, yieldSeason);
+          const r = rowNow();
+          const crop = classNow();
           cropSel.value = crop || "";
           // Never overwrite a box someone is typing in: a save that finishes late (from the OTHER box)
           // would otherwise wipe what they have typed so far.
           const active = document.activeElement;
           if (active !== planned) planned.value = r && numOrNull(r.planned_bu_ac) != null ? String(r.planned_bu_ac) : "";
-          const ac0 = numOrNull(f.acres) || 0;
+          if (active !== acresIn) acresIn.value = r && numOrNull(r.acres) != null ? String(r.acres) : "";
+          const ac0 = yieldAcresOf(f, r);
           const perAc = r ? numOrNull(r.actual_bu_ac) : null;
           const total = yieldHarvestedBu(r, ac0);
           // The two harvest boxes follow each other, so if either is being typed in, leave both alone.
@@ -4177,7 +4234,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             actual.value = perAc != null ? String(Math.round(perAc * 100) / 100) : "";
             harvIn.value = total != null ? String(Math.round(total * 10) / 10) : "";
           }
-          const hist = yieldHistory(f, yieldSeason);
+          const hist = yieldHistory(f, yieldSeason, pl);
           histTd.textContent = hist ? `avg ${fmtYield(hist.avg)} (${hist.years} season${hist.years === 1 ? "" : "s"})` : "—";
           avgBtn.style.display = hist ? "" : "none";
           avgBtn.textContent = hist ? `Use ${fmtYield(Math.round(hist.avg * 10) / 10)}` : "";
@@ -4185,9 +4242,9 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           showFigures();
           tr.style.opacity = crop ? "" : "0.75";
         }
-        // Projected bushels (planned yield × acres) worked out from what is in the planned box right now, so it follows
+        // Projected bushels (planned yield × acres planted) worked out from what is in the boxes right now, so it follows
         function showFigures() {
-          const ac = numOrNull(f.acres) || 0;
+          const ac = curAcres();
           const typed = (input) => { const n = numOrNull(input.value); return n != null && n >= 0 ? n : null; };
           const p = typed(planned);
           projTd.textContent = p != null ? fmtBuInt(ac * p) : "—"; // planned × acres only; the harvested boxes don't touch it
@@ -4196,7 +4253,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         async function commit(patch, label) {
           setStatus("Saving…");
           try {
-            await saveYield(f, patch);
+            await saveYield(f, patch, pl);
             setStatus(label || "Saved");
           } catch (err) {
             setStatus("Not saved: " + err.message, true);
@@ -4211,24 +4268,45 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             const raw = input.value.trim();
             const v = raw === "" ? null : Number(raw);
             if (v != null && (isNaN(v) || v < 0)) { setStatus("Enter a yield of 0 or more", true); paint(); return; }
-            if (v != null && !yieldClassOf(f, yieldSeason)) { setStatus("Pick the kind of grain first", true); paint(); return; }
+            if (v != null && !classNow()) { setStatus("Pick the kind of grain first", true); paint(); return; }
             await commit({ [column]: v });
           });
         }
         yieldInput(planned, "planned_bu_ac");
+        // Acres planted: empty means the whole field. A typed total is exact, so it is kept and its bu/ac is
+        // worked out again from the new acres; a typed bu/ac works the total out from the acres.
+        const exactTotal = () => { const r = rowNow(); return r ? numOrNull(r.actual_bu) : null; };
+        acresIn.addEventListener("input", () => {
+          const ac = curAcres();
+          const ex = exactTotal();
+          if (ex != null && ac > 0) actual.value = String(Math.round((ex / ac) * 100) / 100);
+          else { const v = numOrNull(actual.value); if (v != null && v >= 0 && ac > 0) harvIn.value = String(Math.round(ac * v * 10) / 10); }
+          showFigures();
+        });
+        acresIn.addEventListener("keydown", (e) => { if (e.key === "Enter") acresIn.blur(); });
+        acresIn.addEventListener("change", async () => {
+          const raw = acresIn.value.trim();
+          const v = raw === "" ? null : Number(raw);
+          if (v != null && (isNaN(v) || v <= 0)) { setStatus("Enter acres above 0, or leave it empty for the whole field", true); paint(); return; }
+          if (v != null && fieldAcres() > 0 && v > fieldAcres() + 1e-9) { setStatus(`This field only has ${fmtAcres(fieldAcres())} acres`, true); paint(); return; }
+          if (!classNow()) { setStatus("Pick the kind of grain first", true); paint(); return; }
+          const newAc = v != null ? v : fieldAcres();
+          const patch = { acres: v };
+          const ex = exactTotal();
+          if (ex != null && newAc > 0) patch.actual_bu_ac = Math.round((ex / newAc) * 10000) / 10000;
+          await commit(patch);
+        });
         // Actual yield per acre and total dry bushels are two ways in to the same figure: type either and the
-        // other follows (live as you type, and again when saved). A typed total is kept exactly; a typed
-        // bu/ac works the total out from the acres.
-        const ratio = () => numOrNull(f.acres) || 0;
+        // other follows (live as you type, and again when saved).
         actual.addEventListener("input", () => {
           const v = numOrNull(actual.value);
-          if (v != null && v >= 0 && ratio() > 0) harvIn.value = String(Math.round(ratio() * v * 10) / 10);
+          if (v != null && v >= 0 && curAcres() > 0) harvIn.value = String(Math.round(curAcres() * v * 10) / 10);
           else if (actual.value.trim() === "") harvIn.value = "";
           showFigures();
         });
         harvIn.addEventListener("input", () => {
           const v = numOrNull(harvIn.value);
-          if (v != null && v >= 0 && ratio() > 0) actual.value = String(Math.round((v / ratio()) * 100) / 100);
+          if (v != null && v >= 0 && curAcres() > 0) actual.value = String(Math.round((v / curAcres()) * 100) / 100);
           else if (harvIn.value.trim() === "") actual.value = "";
           showFigures();
         });
@@ -4236,7 +4314,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           const raw = input.value.trim();
           const v = raw === "" ? null : Number(raw);
           if (v != null && (isNaN(v) || v < 0)) { setStatus(`Enter ${what} of 0 or more`, true); paint(); return { bad: true }; }
-          if (v != null && !yieldClassOf(f, yieldSeason)) { setStatus("Pick the kind of grain first", true); paint(); return { bad: true }; }
+          if (v != null && !classNow()) { setStatus("Pick the kind of grain first", true); paint(); return { bad: true }; }
           return { v };
         };
         actual.addEventListener("change", async () => {
@@ -4247,19 +4325,43 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         harvIn.addEventListener("change", async () => {
           const c = yieldCheck(harvIn, "a total"); if (c.bad) return;
           if (c.v == null) { await commit({ actual_bu: null, actual_bu_ac: null }); return; }
-          const acres = numOrNull(f.acres) || 0;
+          const acres = curAcres();
           if (acres <= 0) { setStatus("This field has no acres on file, so bu/ac can't be worked out", true); paint(); return; }
           await commit({ actual_bu: c.v, actual_bu_ac: Math.round((c.v / acres) * 10000) / 10000 });
         });
         cropSel.addEventListener("change", async () => {
           const cls = YIELD_CLASSES.find((x) => x.label === cropSel.value);
           await commit(cls ? { crop: cls.crop, status: cls.status } : { crop: null, status: null });
-          if (yieldSort === "grain") paintRows(); // the field moves to its new place in the list
+          if (yieldSort === "grain" && pl === 1) paintRows(); // the field moves to its new place in the list
         });
         avgBtn.addEventListener("click", () => {
-          const hist = yieldHistory(f, yieldSeason);
+          const hist = yieldHistory(f, yieldSeason, pl);
           if (hist) commit({ planned_bu_ac: Math.round(hist.avg * 10) / 10 }, "Saved (past-season average)");
         });
+        if (addBtn) addBtn.addEventListener("click", () => { doubleOpen.add(String(f.id)); paintRows(); });
+        if (removeBtn) {
+          let armed = null;
+          removeBtn.addEventListener("click", async () => {
+            const r = rowNow();
+            // Anything saved needs a second click (no pop-up boxes), so a stray tap can't wipe it.
+            if (r && !armed) {
+              removeBtn.textContent = "Really remove?";
+              armed = setTimeout(() => { armed = null; removeBtn.textContent = "Remove"; }, 4000);
+              return;
+            }
+            clearTimeout(armed); armed = null;
+            if (r) {
+              const del = await supabase.from("field_yields").delete().eq("field_id", f.id).eq("season", yieldSeason).eq("planting", 2);
+              if (del.error) { setStatus("Not removed: " + del.error.message, true); removeBtn.textContent = "Remove"; return; }
+              yieldRows = yieldRows.filter((x) => x !== r);
+            }
+            doubleOpen.delete(String(f.id));
+            rows.delete(`${f.id}:2`);
+            paintRows();
+            paintSummary();
+          });
+        }
+        tr._syncDouble = (second) => { if (addBtn) addBtn.style.display = second ? "none" : ""; };
         paint();
         return tr;
       }
@@ -4269,14 +4371,24 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const q = yieldSearch.trim().toLowerCase();
         tbody.innerHTML = "";
         const byName = (a, b) => (a.name || "").localeCompare(b.name || "", undefined, { numeric: true });
-        // Grain order is the order of the eight kinds (all the corn, then soybeans, then oats; Chemical, Organic,
+        // Grain order is the order of the twelve kinds (all the corn, then soybeans, then oats, peas, sweet corn; Chemical, Organic,
         // Transition inside each); fields with no kind of grain yet go last. Same-grain fields stay in name order.
+        // A field's double crop always sits right under its main crop.
         const rank = (f) => { const i = YIELD_CLASSES.findIndex((c) => c.label === yieldClassOf(f, yieldSeason)); return i < 0 ? 99 : i; };
         const list = [...yieldFieldList()].sort(yieldSort === "grain" ? (a, b) => rank(a) - rank(b) || byName(a, b) : byName);
         list.forEach((f) => {
           if (q && !(f.name || "").toLowerCase().includes(q)) return;
-          if (!rows.has(f.id)) rows.set(f.id, buildRow(f));
-          tbody.appendChild(rows.get(f.id));
+          const k1 = `${f.id}:1`;
+          if (!rows.has(k1)) rows.set(k1, buildRow(f, 1));
+          const main = rows.get(k1);
+          tbody.appendChild(main);
+          const second = !!yieldRowOf(f.id, yieldSeason, 2) || doubleOpen.has(String(f.id));
+          main._syncDouble(second);
+          if (second) {
+            const k2 = `${f.id}:2`;
+            if (!rows.has(k2)) rows.set(k2, buildRow(f, 2));
+            tbody.appendChild(rows.get(k2));
+          }
         });
         if (!tbody.firstChild) {
           const tr = document.createElement("tr");
@@ -4294,12 +4406,12 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
     function grainPositionHtml() {
       const totals = yieldTotals(yieldSeason);
       // A contract belongs to a kind of grain by its crop and sale type: organic → Organic, non-GMO → Transition,
-      // conventional → Chemical (oats have no Chemical kind, so a conventional oat contract counts as Transition-Oats).
+      // conventional → Chemical (a crop with no Chemical kind — oats, peas, sweet corn — counts a conventional contract as Transition).
       const contracted = {}, delivered = {};
       allContracts.forEach((c) => {
         const crop = normYieldCrop(c.crop);
         if (!crop) return;
-        const status = c.sale_type === "organic" ? "organic" : c.sale_type === "non_gmo" ? "transitional" : c.sale_type === "conventional" ? (crop === "Oats" ? "transitional" : "conventional") : null;
+        const status = c.sale_type === "organic" ? "organic" : c.sale_type === "non_gmo" ? "transitional" : c.sale_type === "conventional" ? (yieldClassLabel(crop, "conventional") ? "conventional" : "transitional") : null;
         const label = yieldClassLabel(crop, status);
         if (!label) return;
         contracted[label] = (contracted[label] || 0) + (Number(c.bushels) || 0);
@@ -4333,7 +4445,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             ${con > proj && proj > 0 ? `<div class="meta" data-role="grain-over" style="color:var(--danger);">Contracted ${fmtBuInt(con - proj)} bu more than projected</div>` : ""}
           </div>`;
       });
-      // One row per crop — corn, then soybeans, then oats — with the tiles in fixed columns (Chemical, Organic,
+      // One row per crop — corn, soybeans, oats, peas, sweet corn — with the tiles in fixed columns (Chemical, Organic,
       // Transition) so the same kind lines up down the page. Crops with nothing to show get no row.
       let cards = "";
       YIELD_CROPS.forEach((crop) => {
