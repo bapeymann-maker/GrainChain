@@ -4028,6 +4028,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const cls = YIELD_CLASSES.find((x) => x.label === yieldClassOf(f, yieldSeason));
       const payload = { field_id: f.id, season: yieldSeason, ...(cls ? { crop: cls.crop, status: cls.status } : {}), ...patch };
       const { data, error } = await supabase.from("field_yields").upsert(payload, { onConflict: "field_id,season" }).select();
+      if (error && /actual_bu\b|schema cache/i.test(error.message) && /actual_bu\b/.test(error.message)) throw new Error("the database doesn't have the total-bushels column yet — run add-field-yields.sql in the Supabase SQL Editor (it also refreshes Supabase's schema cache), then reload this page");
       if (error || !data || data.length === 0) throw new Error(error ? error.message : "Nothing was saved — check that add-field-yields.sql has been run");
       const saved = data[0];
       const i = yieldRows.findIndex((r) => String(r.field_id) === String(f.id) && r.season === yieldSeason);
