@@ -3992,6 +3992,14 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       if (past.length === 0) return null;
       return { avg: past.reduce((s, r) => s + Number(r.actual_bu_ac), 0) / past.length, years: past.length };
     }
+    // Bushels harvested from a field: the total typed in (exact), else acres × the actual yield per acre.
+    const yieldHarvestedBu = (r, acres) => {
+      if (!r) return null;
+      const total = numOrNull(r.actual_bu);
+      if (total != null) return total;
+      const perAc = numOrNull(r.actual_bu_ac);
+      return perAc != null ? acres * perAc : null;
+    };
     // Totals by crop for a season. Projected = the actual yield where one is in, else the planned yield —
     // so as fields are harvested the projection firms up, and the harvested part fills in the projected bar.
     function yieldTotals(season) {
@@ -4003,11 +4011,11 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const acres = numOrNull(f.acres) || 0;
         const r = yieldRowOf(f.id, season);
         const planned = r ? numOrNull(r.planned_bu_ac) : null;
-        const actual = r ? numOrNull(r.actual_bu_ac) : null;
+        const harvested = yieldHarvestedBu(r, acres);
         const t = out[crop];
         t.fields += 1;
         t.acres += acres;
-        if (actual != null) { t.actual += acres * actual; t.projected += acres * actual; }
+        if (harvested != null) { t.actual += harvested; t.projected += harvested; }
         else if (planned != null) t.projected += acres * planned;
         else t.missing += 1;
       });
@@ -4069,7 +4077,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       table.innerHTML = `<thead><tr>
         <th style="cursor:default;">Field</th><th style="cursor:default;">Acres</th><th style="cursor:default;">Grain</th>
         <th style="cursor:default;">Planned bu/ac</th><th style="cursor:default;">Past seasons</th>
-        <th style="cursor:default;">Actual bu/ac</th><th style="cursor:default;">Projected bu</th><th style="cursor:default;">Harvested bu</th><th style="cursor:default;"></th>
+        <th style="cursor:default;">Actual bu/ac</th><th style="cursor:default;">Projected bu</th><th style="cursor:default;" title="Total dry bushels harvested from the field — type it and the bu/ac is worked out">Harvested dry bu</th><th style="cursor:default;"></th>
       </tr></thead>`;
       const tbody = document.createElement("tbody");
       table.appendChild(tbody);
@@ -4127,25 +4135,46 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         actualTd.appendChild(actual);
         const projTd = td(); projTd.setAttribute("data-role", "yield-projected");
         const harvTd = td(); harvTd.setAttribute("data-role", "yield-harvested");
+        const harvIn = document.createElement("input");
+        harvIn.type = "number"; harvIn.min = "0"; harvIn.step = "any"; harvIn.inputMode = "decimal";
+        harvIn.style.width = "110px";
+        harvIn.setAttribute("data-role", "yield-harvested-bu");
+        harvIn.title = "Total dry bushels harvested from this field — type it and the actual bu/ac is worked out";
+        harvTd.appendChild(harvIn);
         const statusTd = td(); statusTd.setAttribute("data-role", "yield-status"); statusTd.className = "meta";
 
         function paint() {
           const r = yieldRowOf(f.id, yieldSeason);
           const crop = yieldClassOf(f, yieldSeason);
           cropSel.value = crop || "";
-          planned.value = r && numOrNull(r.planned_bu_ac) != null ? String(r.planned_bu_ac) : "";
-          actual.value = r && numOrNull(r.actual_bu_ac) != null ? String(r.actual_bu_ac) : "";
+          // Never overwrite a box someone is typing in: a save that finishes late (from the OTHER box)
+          // would otherwise wipe what they have typed so far.
+          const active = document.activeElement;
+          if (active !== planned) planned.value = r && numOrNull(r.planned_bu_ac) != null ? String(r.planned_bu_ac) : "";
+          const ac0 = numOrNull(f.acres) || 0;
+          const perAc = r ? numOrNull(r.actual_bu_ac) : null;
+          const total = yieldHarvestedBu(r, ac0);
+          // The two harvest boxes follow each other, so if either is being typed in, leave both alone.
+          if (active !== actual && active !== harvIn) {
+            actual.value = perAc != null ? String(Math.round(perAc * 100) / 100) : "";
+            harvIn.value = total != null ? String(Math.round(total * 10) / 10) : "";
+          }
           const hist = yieldHistory(f, yieldSeason);
           histTd.textContent = hist ? `avg ${fmtYield(hist.avg)} (${hist.years} season${hist.years === 1 ? "" : "s"})` : "—";
           avgBtn.style.display = hist ? "" : "none";
           avgBtn.textContent = hist ? `Use ${fmtYield(Math.round(hist.avg * 10) / 10)}` : "";
           avgBtn.title = "Fill the planned yield with this field's average from past seasons";
-          const ac = numOrNull(f.acres) || 0;
-          const p = r ? numOrNull(r.planned_bu_ac) : null;
-          const a = r ? numOrNull(r.actual_bu_ac) : null;
-          projTd.textContent = a != null ? fmtBuInt(ac * a) : p != null ? fmtBuInt(ac * p) : "—";
-          harvTd.textContent = a != null ? fmtBuInt(ac * a) : "—";
+          showFigures();
           tr.style.opacity = crop ? "" : "0.75";
+        }
+        // Projected and harvested bushels worked out from what is in the boxes right now, so they follow
+        // the typing; once saved, the boxes hold the saved values, so it is the same figure.
+        function showFigures() {
+          const ac = numOrNull(f.acres) || 0;
+          const typed = (input) => { const n = numOrNull(input.value); return n != null && n >= 0 ? n : null; };
+          const p = typed(planned), a = typed(actual), h = typed(harvIn);
+          const harvested = h != null ? h : a != null ? ac * a : null;
+          projTd.textContent = harvested != null ? fmtBuInt(harvested) : p != null ? fmtBuInt(ac * p) : "—";
         }
         const setStatus = (text, bad) => { statusTd.textContent = text; statusTd.style.color = bad ? "var(--danger)" : ""; };
         async function commit(patch, label) {
@@ -4160,6 +4189,8 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           paintSummary();
         }
         function yieldInput(input, column) {
+          input.addEventListener("input", showFigures);
+          input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); }); // leaving the box is what saves it
           input.addEventListener("change", async () => {
             const raw = input.value.trim();
             const v = raw === "" ? null : Number(raw);
@@ -4169,7 +4200,41 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           });
         }
         yieldInput(planned, "planned_bu_ac");
-        yieldInput(actual, "actual_bu_ac");
+        // Actual yield per acre and total dry bushels are two ways in to the same figure: type either and the
+        // other follows (live as you type, and again when saved). A typed total is kept exactly; a typed
+        // bu/ac works the total out from the acres.
+        const ratio = () => numOrNull(f.acres) || 0;
+        actual.addEventListener("input", () => {
+          const v = numOrNull(actual.value);
+          if (v != null && v >= 0 && ratio() > 0) harvIn.value = String(Math.round(ratio() * v * 10) / 10);
+          else if (actual.value.trim() === "") harvIn.value = "";
+          showFigures();
+        });
+        harvIn.addEventListener("input", () => {
+          const v = numOrNull(harvIn.value);
+          if (v != null && v >= 0 && ratio() > 0) actual.value = String(Math.round((v / ratio()) * 100) / 100);
+          else if (harvIn.value.trim() === "") actual.value = "";
+          showFigures();
+        });
+        const yieldCheck = (input, what) => {
+          const raw = input.value.trim();
+          const v = raw === "" ? null : Number(raw);
+          if (v != null && (isNaN(v) || v < 0)) { setStatus(`Enter ${what} of 0 or more`, true); paint(); return { bad: true }; }
+          if (v != null && !yieldClassOf(f, yieldSeason)) { setStatus("Pick the kind of grain first", true); paint(); return { bad: true }; }
+          return { v };
+        };
+        actual.addEventListener("change", async () => {
+          const c = yieldCheck(actual, "a yield"); if (c.bad) return;
+          await commit({ actual_bu_ac: c.v, actual_bu: null });
+        });
+        harvIn.addEventListener("keydown", (e) => { if (e.key === "Enter") harvIn.blur(); });
+        harvIn.addEventListener("change", async () => {
+          const c = yieldCheck(harvIn, "a total"); if (c.bad) return;
+          if (c.v == null) { await commit({ actual_bu: null, actual_bu_ac: null }); return; }
+          const acres = numOrNull(f.acres) || 0;
+          if (acres <= 0) { setStatus("This field has no acres on file, so bu/ac can't be worked out", true); paint(); return; }
+          await commit({ actual_bu: c.v, actual_bu_ac: Math.round((c.v / acres) * 10000) / 10000 });
+        });
         cropSel.addEventListener("change", () => {
           const cls = YIELD_CLASSES.find((x) => x.label === cropSel.value);
           commit(cls ? { crop: cls.crop, status: cls.status } : { crop: null, status: null });
