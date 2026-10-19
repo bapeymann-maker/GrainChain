@@ -117,7 +117,11 @@
     .badge-unpaid { color: #E2812B; background: #3A250D; }
     .dash-section-title { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
     .dash-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-bottom: 8px; }
-    .grain-card { min-width: 300px; }
+    /* three equal tiles per crop, one crop per row; tiles can shrink so nothing overlaps, and stack on a narrow screen */
+    .grain-crop-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+    .grain-card { min-width: 0; overflow: hidden; }
+    .grain-empty { min-width: 0; }
+    @media (max-width: 900px) { .grain-crop-row { grid-template-columns: minmax(0, 1fr); } .grain-empty { display: none; } }
     .grain-row { margin-bottom: 12px; }
     .grain-label { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; margin-bottom: 4px; flex-wrap: wrap; }
     .grain-track { position: relative; height: 18px; border-radius: 4px; background: var(--panel); border: 1px solid var(--border); overflow: hidden; }
@@ -4285,7 +4289,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         delivered[label] = (delivered[label] || 0) + (Number(c.delivered_bushels) || 0);
       });
       const pct = (n, max) => (max > 0 ? Math.max(0, Math.min(100, (n / max) * 100)) : 0);
-      let cards = "";
+      const cardsByLabel = {};
       let missingTotal = 0;
       YIELD_CLASSES.forEach(({ label: crop }) => {
         const t = totals[crop];
@@ -4298,13 +4302,21 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             <div class="grain-label"><span>${label}</span><span class="meta">${fmtBuInt(done)} bu ${doneWord}${total > 0 ? ` of ${fmtBuInt(total)} ${totalWord} (${Math.round((done / total) * 100)}%)` : ` · nothing ${totalWord} yet`}</span></div>
             <div class="grain-track"><div class="grain-total ${cls}" data-role="grain-total" style="width:${pct(total, max)}%;"></div><div class="grain-done ${cls}" data-role="grain-done" style="width:${pct(done, max)}%;"></div></div>
           </div>`;
-        cards += `
+        cardsByLabel[crop] = `
           <div class="dash-card grain-card" data-role="grain-card" data-crop="${escapeHtml(crop)}" data-projected="${Math.round(proj)}" data-harvested="${Math.round(act)}" data-contracted="${Math.round(con)}" data-delivered="${Math.round(del)}">
             <div class="dash-card-title">${escapeHtml(crop)}</div>
             ${line("green", "Harvest", proj, act, "projected", "harvested")}
             ${line("blue", "Sales", con, del, "contracted", "delivered")}
             ${con > proj && proj > 0 ? `<div class="meta" data-role="grain-over" style="color:var(--danger);">Contracted ${fmtBuInt(con - proj)} bu more than projected</div>` : ""}
           </div>`;
+      });
+      // One row per crop — corn, then soybeans, then oats — with the tiles in fixed columns (Chemical, Organic,
+      // Transition) so the same kind lines up down the page. Crops with nothing to show get no row.
+      let cards = "";
+      YIELD_CROPS.forEach((crop) => {
+        const cells = ["conventional", "organic", "transitional"].map((st) => cardsByLabel[yieldClassLabel(crop, st)] || `<div class="grain-empty"></div>`);
+        if (cells.every((c) => c.includes("grain-empty"))) return;
+        cards += `<div class="grain-crop-row" data-role="grain-crop-row" data-crop="${crop}">${cells.join("")}</div>`;
       });
       let html = `<div class="dash-section-title" data-role="grain-title">Grain position — ${escapeHtml(String(yieldSeason))} season</div>`;
       html += `<div class="legend-row" style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;margin-bottom:10px;color:var(--text-muted);">
@@ -4313,7 +4325,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         <span class="legend-chip"><span class="grain-swatch blue total"></span>Contracted</span>
         <span class="legend-chip"><span class="grain-swatch blue"></span>Sold &amp; delivered</span></div>`;
       if (yieldError) html += `<div class="meta" data-role="grain-note" style="margin-bottom:12px;">Yields aren't available yet — run add-field-yields.sql (${escapeHtml(yieldError)}).</div>`;
-      html += cards ? `<div class="dash-grid" data-role="grain-grid" style="margin-bottom:8px;">${cards}</div>` : `<div class="meta" data-role="grain-note" style="margin-bottom:12px;">Nothing to show yet — add planned yields on the Yield tab, or contracts on the Contracts tab.</div>`;
+      html += cards ? `<div data-role="grain-grid" style="margin-bottom:8px;">${cards}</div>` : `<div class="meta" data-role="grain-note" style="margin-bottom:12px;">Nothing to show yet — add planned yields on the Yield tab, or contracts on the Contracts tab.</div>`;
       if (missingTotal > 0 && !yieldError) html += `<div class="meta" data-role="grain-missing" style="margin-bottom:20px;">${missingTotal} field${missingTotal === 1 ? " has" : "s have"} a kind of grain but no planned yield yet, so ${missingTotal === 1 ? "it isn't" : "they aren't"} in the projected bars.</div>`;
       return html + `<div style="margin-bottom:24px;"></div>`;
     }
