@@ -4000,8 +4000,9 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const perAc = numOrNull(r.actual_bu_ac);
       return perAc != null ? acres * perAc : null;
     };
-    // Totals by crop for a season. Projected = the actual yield where one is in, else the planned yield —
-    // so as fields are harvested the projection firms up, and the harvested part fills in the projected bar.
+    // Totals by crop for a season. Projected is only ever planned yield × acres — entering what was actually
+    // harvested never changes it — and harvested is what was actually brought in (the typed total, or acres ×
+    // actual bu/ac). A field with no planned yield isn't in the projected figure and is counted as missing.
     function yieldTotals(season) {
       const out = {};
       YIELD_CLASSES.forEach((c) => (out[c.label] = { fields: 0, acres: 0, projected: 0, actual: 0, missing: 0 }));
@@ -4015,8 +4016,8 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const t = out[crop];
         t.fields += 1;
         t.acres += acres;
-        if (harvested != null) { t.actual += harvested; t.projected += harvested; }
-        else if (planned != null) t.projected += acres * planned;
+        if (harvested != null) t.actual += harvested;
+        if (planned != null) t.projected += acres * planned;
         else t.missing += 1;
       });
       return out;
@@ -4168,14 +4169,12 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           showFigures();
           tr.style.opacity = crop ? "" : "0.75";
         }
-        // Projected and harvested bushels worked out from what is in the boxes right now, so they follow
-        // the typing; once saved, the boxes hold the saved values, so it is the same figure.
+        // Projected bushels (planned yield × acres) worked out from what is in the planned box right now, so it follows
         function showFigures() {
           const ac = numOrNull(f.acres) || 0;
           const typed = (input) => { const n = numOrNull(input.value); return n != null && n >= 0 ? n : null; };
-          const p = typed(planned), a = typed(actual), h = typed(harvIn);
-          const harvested = h != null ? h : a != null ? ac * a : null;
-          projTd.textContent = harvested != null ? fmtBuInt(harvested) : p != null ? fmtBuInt(ac * p) : "—";
+          const p = typed(planned);
+          projTd.textContent = p != null ? fmtBuInt(ac * p) : "—"; // planned × acres only; the harvested boxes don't touch it
         }
         const setStatus = (text, bad) => { statusTd.textContent = text; statusTd.style.color = bad ? "var(--danger)" : ""; };
         async function commit(patch, label) {
