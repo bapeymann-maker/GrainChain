@@ -3960,6 +3960,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
     let yieldError = null; // set when the field_yields table isn't there yet
     let yieldSeason = new Date().getFullYear();
     let yieldSearch = "";
+    let yieldSort = "name"; // "name" | "grain" — Yield tab row order
 
     async function fetchYield() {
       statusLine.textContent = "Loading…";
@@ -4068,7 +4069,13 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const note = document.createElement("span");
       note.className = "meta";
       note.textContent = `${YIELD_EXCLUDED_OPERATION} fields are left out. Type a yield in bushels per acre; it saves when you leave the box.`;
-      bar.append(seasonSel, search, note);
+      const sortSel = document.createElement("select");
+      sortSel.setAttribute("data-role", "yield-sort");
+      sortSel.title = "Sort the fields";
+      sortSel.innerHTML = `<option value="name">Sort: field name</option><option value="grain">Sort: grain (corn, soybeans, oats)</option>`;
+      sortSel.value = yieldSort;
+      sortSel.addEventListener("change", () => { yieldSort = sortSel.value; paintRows(); });
+      bar.append(seasonSel, sortSel, search, note);
       root.appendChild(bar);
 
       const summary = document.createElement("div");
@@ -4081,12 +4088,17 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       wrap.style.overflowX = "auto";
       const table = document.createElement("table");
       table.innerHTML = `<thead><tr>
-        <th style="cursor:default;">Field</th><th style="cursor:default;">Acres</th><th style="cursor:default;">Grain</th>
+        <th style="cursor:default;">Field</th><th style="cursor:default;">Acres</th><th data-role="yield-grain-head" style="cursor:pointer;" title="Click to sort by grain">Grain</th>
         <th style="cursor:default;">Planned bu/ac</th><th style="cursor:default;">Past seasons</th>
         <th style="cursor:default;">Actual bu/ac</th><th style="cursor:default;">Projected bu</th><th style="cursor:default;" title="Total dry bushels harvested from the field — type it and the bu/ac is worked out">Harvested dry bu</th><th style="cursor:default;"></th>
       </tr></thead>`;
       const tbody = document.createElement("tbody");
       table.appendChild(tbody);
+      table.querySelector("[data-role=yield-grain-head]").addEventListener("click", () => {
+        yieldSort = yieldSort === "grain" ? "name" : "grain";
+        sortSel.value = yieldSort;
+        paintRows();
+      });
       wrap.appendChild(table);
       root.appendChild(wrap);
 
@@ -4239,9 +4251,10 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           if (acres <= 0) { setStatus("This field has no acres on file, so bu/ac can't be worked out", true); paint(); return; }
           await commit({ actual_bu: c.v, actual_bu_ac: Math.round((c.v / acres) * 10000) / 10000 });
         });
-        cropSel.addEventListener("change", () => {
+        cropSel.addEventListener("change", async () => {
           const cls = YIELD_CLASSES.find((x) => x.label === cropSel.value);
-          commit(cls ? { crop: cls.crop, status: cls.status } : { crop: null, status: null });
+          await commit(cls ? { crop: cls.crop, status: cls.status } : { crop: null, status: null });
+          if (yieldSort === "grain") paintRows(); // the field moves to its new place in the list
         });
         avgBtn.addEventListener("click", () => {
           const hist = yieldHistory(f, yieldSeason);
@@ -4255,7 +4268,11 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       function paintRows() {
         const q = yieldSearch.trim().toLowerCase();
         tbody.innerHTML = "";
-        const list = [...yieldFieldList()].sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { numeric: true }));
+        const byName = (a, b) => (a.name || "").localeCompare(b.name || "", undefined, { numeric: true });
+        // Grain order is the order of the eight kinds (all the corn, then soybeans, then oats; Chemical, Organic,
+        // Transition inside each); fields with no kind of grain yet go last. Same-grain fields stay in name order.
+        const rank = (f) => { const i = YIELD_CLASSES.findIndex((c) => c.label === yieldClassOf(f, yieldSeason)); return i < 0 ? 99 : i; };
+        const list = [...yieldFieldList()].sort(yieldSort === "grain" ? (a, b) => rank(a) - rank(b) || byName(a, b) : byName);
         list.forEach((f) => {
           if (q && !(f.name || "").toLowerCase().includes(q)) return;
           if (!rows.has(f.id)) rows.set(f.id, buildRow(f));
@@ -4296,17 +4313,23 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const proj = t.projected, act = t.actual, con = contracted[crop] || 0, del = delivered[crop] || 0;
         missingTotal += t.missing;
         if (proj + act + con + del <= 0) return;
-        const max = Math.max(proj, act, con, del);
-        const line = (cls, label, total, done, totalWord, doneWord, a, b) => `
+        // Harvest bar: harvested or projected, whichever is bigger, fills the width. Sales bar: its track is exactly
+        // the width of the projected bar, so 100% of it is the projected bushels, and contracted / delivered are
+        // drawn as a share of that (capped at the full track when contracted is over the projection). With no
+        // projection to measure against, the sales bar falls back to contracted bushels being the full width.
+        const max = Math.max(proj, act);
+        const salesBase = proj > 0 ? proj : Math.max(con, del);
+        const salesTrack = proj > 0 ? pct(proj, max) : 100;
+        const line = (cls, label, total, done, totalWord, doneWord, trackPct, base) => `
           <div class="grain-row" data-role="grain-row" data-kind="${cls}">
             <div class="grain-label"><span>${label}</span><span class="meta">${fmtBuInt(done)} bu ${doneWord}${total > 0 ? ` of ${fmtBuInt(total)} ${totalWord} (${Math.round((done / total) * 100)}%)` : ` · nothing ${totalWord} yet`}</span></div>
-            <div class="grain-track"><div class="grain-total ${cls}" data-role="grain-total" style="width:${pct(total, max)}%;"></div><div class="grain-done ${cls}" data-role="grain-done" style="width:${pct(done, max)}%;"></div></div>
+            <div class="grain-track" data-role="grain-track" style="width:${trackPct}%;"><div class="grain-total ${cls}" data-role="grain-total" style="width:${pct(total, base)}%;"></div><div class="grain-done ${cls}" data-role="grain-done" style="width:${pct(done, base)}%;"></div></div>
           </div>`;
         cardsByLabel[crop] = `
           <div class="dash-card grain-card" data-role="grain-card" data-crop="${escapeHtml(crop)}" data-projected="${Math.round(proj)}" data-harvested="${Math.round(act)}" data-contracted="${Math.round(con)}" data-delivered="${Math.round(del)}">
             <div class="dash-card-title">${escapeHtml(crop)}</div>
-            ${line("green", "Harvest", proj, act, "projected", "harvested")}
-            ${line("blue", "Sales", con, del, "contracted", "delivered")}
+            ${line("green", "Harvest", proj, act, "projected", "harvested", 100, max)}
+            ${line("blue", "Sales", con, del, "contracted", "delivered", salesTrack, salesBase)}
             ${con > proj && proj > 0 ? `<div class="meta" data-role="grain-over" style="color:var(--danger);">Contracted ${fmtBuInt(con - proj)} bu more than projected</div>` : ""}
           </div>`;
       });
