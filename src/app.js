@@ -31,6 +31,9 @@ import { pullDryerStatus, pullDryerReadingsForRun } from "./sync.js";
 const TRUCKS = ["U1", "U2", "U3", "U4", "U5", "U6", "U7", "U8"];
 const TRUCK_BUSHELS = { U1: 1000, U2: 1000, U3: 1000, U4: 1000, U5: 1000, U6: 1000, U7: 1000, U8: 1000 };
 const CROPS = ["Corn", "Soybeans", "Oats"];
+// An outside trucker's trailer: no known capacity, so the driver's weight or bushels is always entered.
+// Stored as the text "External" in the load's truck column (the same word the haul log uses).
+const EXTERNAL_TRAILER = "External";
 
 // Farm sites a field load can go to, in the order they're shown. Danube and
 // Fairfax are left out on purpose — grain there arrives as an elevator delivery.
@@ -590,8 +593,9 @@ function truckScreen() {
         {
           style: `${BODY}padding:16px 8px;border-radius:10px;border:1px solid ${selected ? COLORS.gold : COLORS.border};background:${selected ? COLORS.goldDark : COLORS.panelAlt};color:${selected ? COLORS.gold : COLORS.text};font-size:16px;font-weight:700;cursor:pointer;text-align:center;`,
           onclick: () => {
+            const wasExternal = state.truck === EXTERNAL_TRAILER;
             state.truck = t;
-            state.truckMode = state.truckMode === "buffer" || !state.truckMode ? "full" : state.truckMode;
+            state.truckMode = state.truckMode === "buffer" || !state.truckMode || wasExternal ? "full" : state.truckMode;
             setState({ weightError: "" });
           },
         },
@@ -601,7 +605,25 @@ function truckScreen() {
   });
   wrap.appendChild(grid);
 
-  if (state.truck && state.truckMode !== "buffer") {
+  const extSelected = state.truck === EXTERNAL_TRAILER && state.truckMode !== "buffer";
+  wrap.appendChild(
+    h(
+      "button",
+      {
+        "data-role": "external-trailer",
+        style: `${BODY}padding:14px 16px;border-radius:10px;border:1px solid ${extSelected ? COLORS.gold : COLORS.border};background:${extSelected ? COLORS.goldDark : COLORS.panelAlt};color:${extSelected ? COLORS.gold : COLORS.text};font-size:15px;font-weight:700;cursor:pointer;text-align:center;`,
+        onclick: () => {
+          state.truck = EXTERNAL_TRAILER;
+          state.truckMode = "notFull"; // capacity unknown: the weight is entered below
+          state.isBuffer = false;
+          setState({ weightError: "" });
+        },
+      },
+      "External trailer"
+    )
+  );
+
+  if (state.truck && state.truck !== EXTERNAL_TRAILER && state.truckMode !== "buffer") {
     wrap.appendChild(
       h("div", { style: `font-size:13px;color:${COLORS.textMuted};` }, [
         `Truck ${state.truck} pre-calculated load: `,
@@ -626,7 +648,9 @@ function truckScreen() {
     )
   );
 
-  wrap.appendChild(
+  if (state.truck === EXTERNAL_TRAILER && state.truckMode !== "buffer") {
+    wrap.appendChild(h("div", { "data-role": "external-note", style: `font-size:13px;color:${COLORS.textMuted};` }, "External trailer: its size isn't known, so enter the weight or bushels below."));
+  } else wrap.appendChild(
     h(
       "button",
       {
@@ -718,6 +742,7 @@ function truckScreen() {
           setState({ weightError: "Select which truck first." });
           return;
         }
+        if (state.truck === EXTERNAL_TRAILER && state.truckMode !== "buffer") state.truckMode = "notFull"; // never "full": no known capacity
         const needsWeight = state.truckMode === "buffer" || state.truckMode === "notFull";
         if (needsWeight) {
           const w = parseFloat(state.weight);
@@ -906,7 +931,7 @@ function confirmScreen() {
     ["Field", field.name],
     ["Acres", field.acres ? `${field.acres}` : "On file"],
     ["Status", null],
-    ["Truck", truckMode === "buffer" ? "Buffer truck" : `Truck ${truck}${truckMode === "notFull" ? " (not full)" : " (full)"}`],
+    ["Truck", truckMode === "buffer" ? "Buffer truck" : truck === EXTERNAL_TRAILER ? "External trailer" : `Truck ${truck}${truckMode === "notFull" ? " (not full)" : " (full)"}`],
     [
       "Load",
       truckMode === "buffer" || truckMode === "notFull"
@@ -1553,7 +1578,7 @@ function logPanel() {
     const worker = state.workers.find((w) => w.id === entry.workerId);
     const field = state.fields.find((f) => f.id === entry.fieldId);
     const bin = state.bins.find((b) => b.id === entry.binId);
-    const truckLabel = entry.truck ? `Truck ${entry.truck}` : "Buffer truck";
+    const truckLabel = entry.truck === EXTERNAL_TRAILER ? "External trailer" : entry.truck ? `Truck ${entry.truck}` : "Buffer truck";
     const effectiveStatus = entry.isBuffer ? "conventional" : field ? field.status : null;
     rows.appendChild(
       h("div", { style: `font-size:12px;color:${COLORS.textMuted};display:flex;align-items:center;gap:8px;` }, [
