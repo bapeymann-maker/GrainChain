@@ -125,6 +125,8 @@
     .grain-row { margin-bottom: 12px; }
     .grain-label { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; margin-bottom: 4px; flex-wrap: wrap; }
     .grain-track { position: relative; height: 18px; border-radius: 4px; background: var(--panel); border: 1px solid var(--border); overflow: hidden; }
+    td[data-unit]::after { content: " " attr(data-unit); color: var(--text-muted); font-size: 12px; }
+    .yield-unit { color: var(--text-muted); font-size: 12px; margin-left: 4px; }
     .grain-total, .grain-done { position: absolute; left: 0; top: 0; bottom: 0; }
     .grain-total.green { background: rgba(79, 176, 90, 0.32); }
     .grain-done.green { background: #4FB05A; }
@@ -3956,6 +3958,9 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       { label: "Transition-Sweet Corn", crop: "Sweet Corn", status: "transitional" },
     ];
     const YIELD_CROPS = ["Corn", "Soybeans", "Oats", "Peas", "Sweet Corn"];
+    // Everything is counted in bushels except peas and sweet corn, which the canning company weighs in pounds.
+    const YIELD_UNIT = { Peas: "lb", "Sweet Corn": "lb" };
+    const yieldUnit = (label) => { const c = YIELD_CLASSES.find((x) => x.label === label); return (c && YIELD_UNIT[c.crop]) || "bu"; };
     const yieldClassLabel = (crop, status) => { const c = YIELD_CLASSES.find((x) => x.crop === crop && x.status === status); return c ? c.label : null; };
     const YIELD_EXCLUDED_OPERATION = "LB Pork"; // tracked for harvest progress only, not for grain
     let yieldFields = [];
@@ -4109,8 +4114,8 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const table = document.createElement("table");
       table.innerHTML = `<thead><tr>
         <th style="cursor:default;">Field</th><th style="cursor:default;" title="Acres planted to this grain. Leave empty for the whole field; type fewer when only part of the field was planted.">Acres planted</th><th data-role="yield-grain-head" style="cursor:pointer;" title="Click to sort by grain">Grain</th>
-        <th style="cursor:default;">Planned bu/ac</th><th style="cursor:default;">Past seasons</th>
-        <th style="cursor:default;">Actual bu/ac</th><th style="cursor:default;">Projected bu</th><th style="cursor:default;" title="Total dry bushels harvested from the field — type it and the bu/ac is worked out">Harvested dry bu</th><th style="cursor:default;"></th>
+        <th style="cursor:default;" title="Bushels per acre (pounds per acre for peas and sweet corn)">Planned per ac</th><th style="cursor:default;">Past seasons</th>
+        <th style="cursor:default;" title="Bushels per acre (pounds per acre for peas and sweet corn)">Actual per ac</th><th style="cursor:default;">Projected</th><th style="cursor:default;" title="Total harvested from the field — dry bushels, or pounds for peas and sweet corn. Type it and the per-acre yield is worked out">Harvested total</th><th style="cursor:default;"></th>
       </tr></thead>`;
       const tbody = document.createElement("tbody");
       table.appendChild(tbody);
@@ -4134,8 +4139,8 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           card.setAttribute("data-crop", crop);
           card.innerHTML = `<div class="dash-card-title">${escapeHtml(crop)}</div>
             <div class="meta">${c.fields} field${c.fields === 1 ? "" : "s"} · ${fmtAcres(c.acres)} acres</div>
-            <div class="dash-stat-row"><span>Projected </span><span class="driver-val" data-role="sum-projected">${fmtBuInt(c.projected)} bu</span></div>
-            <div class="dash-stat-row"><span>Harvested </span><span class="ai-val" data-role="sum-actual">${fmtBuInt(c.actual)} bu</span></div>
+            <div class="dash-stat-row"><span>Projected </span><span class="driver-val" data-role="sum-projected">${fmtBuInt(c.projected)} ${yieldUnit(crop)}</span></div>
+            <div class="dash-stat-row"><span>Harvested </span><span class="ai-val" data-role="sum-actual">${fmtBuInt(c.actual)} ${yieldUnit(crop)}</span></div>
             ${c.missing > 0 ? `<div class="meta" data-role="sum-missing">${c.missing} field${c.missing === 1 ? "" : "s"} with no yield yet</div>` : ""}`;
           summary.appendChild(card);
         });
@@ -4199,21 +4204,23 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         avgBtn.className = "small-btn";
         avgBtn.setAttribute("data-role", "yield-use-avg");
         avgBtn.style.marginLeft = "6px";
-        plannedTd.append(planned, avgBtn);
+        const plannedUnit = document.createElement("span"); plannedUnit.className = "yield-unit";
+        plannedTd.append(planned, plannedUnit, avgBtn);
         const histTd = td(); histTd.setAttribute("data-role", "yield-history"); histTd.className = "meta";
         const actualTd = td();
         const actual = document.createElement("input");
         actual.type = "number"; actual.min = "0"; actual.step = "any"; actual.inputMode = "decimal";
         actual.style.width = "90px";
         actual.setAttribute("data-role", "yield-actual");
-        actualTd.appendChild(actual);
+        const actualUnit = document.createElement("span"); actualUnit.className = "yield-unit";
+        actualTd.append(actual, actualUnit);
         const projTd = td(); projTd.setAttribute("data-role", "yield-projected");
         const harvTd = td(); harvTd.setAttribute("data-role", "yield-harvested");
         const harvIn = document.createElement("input");
         harvIn.type = "number"; harvIn.min = "0"; harvIn.step = "any"; harvIn.inputMode = "decimal";
         harvIn.style.width = "110px";
         harvIn.setAttribute("data-role", "yield-harvested-bu");
-        harvIn.title = "Total dry bushels harvested from this planting — type it and the actual bu/ac is worked out";
+        harvIn.title = "Total harvested from this planting (dry bushels; pounds for peas and sweet corn) — type it and the actual yield per acre is worked out";
         harvTd.appendChild(harvIn);
         const statusTd = td(); statusTd.setAttribute("data-role", "yield-status"); statusTd.className = "meta";
 
@@ -4226,6 +4233,10 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           const active = document.activeElement;
           if (active !== planned) planned.value = r && numOrNull(r.planned_bu_ac) != null ? String(r.planned_bu_ac) : "";
           if (active !== acresIn) acresIn.value = r && numOrNull(r.acres) != null ? String(r.acres) : "";
+          const unit = crop ? yieldUnit(crop) : "bu"; // peas and sweet corn are in pounds
+          plannedUnit.textContent = actualUnit.textContent = unit + "/ac";
+          projTd.setAttribute("data-unit", unit);
+          harvTd.setAttribute("data-unit", unit);
           const ac0 = yieldAcresOf(f, r);
           const perAc = r ? numOrNull(r.actual_bu_ac) : null;
           const total = yieldHarvestedBu(r, ac0);
@@ -4326,7 +4337,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           const c = yieldCheck(harvIn, "a total"); if (c.bad) return;
           if (c.v == null) { await commit({ actual_bu: null, actual_bu_ac: null }); return; }
           const acres = curAcres();
-          if (acres <= 0) { setStatus("This field has no acres on file, so bu/ac can't be worked out", true); paint(); return; }
+          if (acres <= 0) { setStatus("This field has no acres on file, so the yield per acre can't be worked out", true); paint(); return; }
           await commit({ actual_bu: c.v, actual_bu_ac: Math.round((c.v / acres) * 10000) / 10000 });
         });
         cropSel.addEventListener("change", async () => {
@@ -4432,9 +4443,10 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const max = Math.max(proj, act);
         const salesBase = proj > 0 ? proj : Math.max(con, del);
         const salesTrack = proj > 0 ? pct(proj, max) : 100;
+        const unit = yieldUnit(crop); // bu, or lb for peas and sweet corn
         const line = (cls, label, total, done, totalWord, doneWord, trackPct, base) => `
           <div class="grain-row" data-role="grain-row" data-kind="${cls}">
-            <div class="grain-label"><span>${label}</span><span class="meta">${fmtBuInt(done)} bu ${doneWord}${total > 0 ? ` of ${fmtBuInt(total)} ${totalWord} (${Math.round((done / total) * 100)}%)` : ` · nothing ${totalWord} yet`}</span></div>
+            <div class="grain-label"><span>${label}</span><span class="meta">${fmtBuInt(done)} ${unit} ${doneWord}${total > 0 ? ` of ${fmtBuInt(total)} ${unit} ${totalWord} (${Math.round((done / total) * 100)}%)` : ` · nothing ${totalWord} yet`}</span></div>
             <div class="grain-track" data-role="grain-track" style="width:${trackPct}%;"><div class="grain-total ${cls}" data-role="grain-total" style="width:${pct(total, base)}%;"></div><div class="grain-done ${cls}" data-role="grain-done" style="width:${pct(done, base)}%;"></div></div>
           </div>`;
         cardsByLabel[crop] = `
@@ -4442,7 +4454,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             <div class="dash-card-title">${escapeHtml(crop)}</div>
             ${line("green", "Harvest", proj, act, "projected", "harvested", 100, max)}
             ${line("blue", "Sales", con, del, "contracted", "delivered", salesTrack, salesBase)}
-            ${con > proj && proj > 0 ? `<div class="meta" data-role="grain-over" style="color:var(--danger);">Contracted ${fmtBuInt(con - proj)} bu more than projected</div>` : ""}
+            ${con > proj && proj > 0 ? `<div class="meta" data-role="grain-over" style="color:var(--danger);">Contracted ${fmtBuInt(con - proj)} ${unit} more than projected</div>` : ""}
           </div>`;
       });
       // One row per crop — corn, soybeans, oats, peas, sweet corn — with the tiles in fixed columns (Chemical, Organic,
