@@ -834,7 +834,7 @@
       haulsDiffWrapEl.style.display = mode === "hauls" ? "flex" : "none";
 
       if (mode === "hauls" && !haulsLoaded) await fetchHauls();
-      if (mode === "harvest") await ensureHarvestFields();
+      if (mode === "harvest") { await ensureHarvestFields(); await ensureYield(); } // the crop of each field comes from the Yield data
       if (mode === "yield") await ensureYield();
       if (mode === "rigs") await ensureRigs();
       if (mode === "editlog") await fetchEditLog();
@@ -3784,6 +3784,32 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       return { byGroup, visible, included: visible.filter((g) => !harvestExcluded.has(g)) };
     }
 
+    // The grain a field is planted to this season (one of the twelve kinds from the Yield tab, else the field's own
+    // crop and status), and a double crop after it if there is one.
+    const harvestKindOf = (f) => yieldClassOf(f, yieldSeason) || null;
+    const harvestCropLabel = (f) => {
+      const k1 = yieldClassOf(f, yieldSeason), k2 = yieldClassOf(f, yieldSeason, 2);
+      const crop = (k) => { const c = YIELD_CLASSES.find((x) => x.label === k); return c ? c.crop : null; };
+      const a = crop(k1), b = crop(k2);
+      return a && b ? `${a} → ${b}` : a || (b ? `→ ${b}` : "no crop set");
+    };
+    // Harvest progress for each kind of grain: acres planted to it (a part-field planting counts only its acres)
+    // and how many of those are on fields ticked as harvested. Fields with no kind yet are grouped together.
+    const NO_CROP = "No crop set";
+    function harvestCropStats(fields) {
+      const out = new Map();
+      fields.forEach((f) => {
+        const label = harvestKindOf(f) || NO_CROP;
+        const acres = yieldAcresOf(f, yieldRowOf(f.id, yieldSeason, 1));
+        if (!out.has(label)) out.set(label, { label, acres: 0, doneAcres: 0, fields: 0, done: 0 });
+        const c = out.get(label);
+        c.acres += acres; c.fields += 1;
+        if (f.harvested) { c.doneAcres += acres; c.done += 1; }
+      });
+      const order = (l) => { const i = YIELD_CLASSES.findIndex((c) => c.label === l); return i < 0 ? 99 : i; };
+      return [...out.values()].sort((a, b) => order(a.label) - order(b.label));
+    }
+
     function renderHarvestPies() {
       const root = document.getElementById("harvest-pies");
       const { byGroup, included } = harvestGroups();
@@ -3804,6 +3830,24 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           </div>`;
       }
       html += `</div>`;
+      // One pie per kind of grain, for the operations ticked above.
+      const crops = harvestCropStats(included.flatMap((g) => byGroup.get(g)));
+      if (crops.length > 0) {
+        html += `<div class="dash-section-title" data-role="harvest-crops-title">By crop — ${yieldSeason} season</div>
+          <div data-role="harvest-crops" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px;margin-bottom:24px;">`;
+        crops.forEach((c) => {
+          const frac = c.acres > 0 ? c.doneAcres / c.acres : 0;
+          html += `<div class="item-card" data-role="harvest-crop-card" data-crop="${escapeHtml(c.label)}" data-done-acres="${c.doneAcres.toFixed(2)}" data-acres="${c.acres.toFixed(2)}" style="text-align:center;padding:12px;">
+            <div style="font-weight:700;margin-bottom:8px;">${escapeHtml(c.label)}</div>
+            ${harvestPieSvg(frac, 110)}
+            <div style="font-size:20px;font-weight:700;color:var(--gold);margin-top:6px;" data-role="harvest-crop-pct">${Math.round(frac * 100)}%</div>
+            <div class="meta">${fmtAcres(c.doneAcres)} of ${fmtAcres(c.acres)} acres harvested</div>
+            <div class="meta" data-role="harvest-crop-left">${fmtAcres(c.acres - c.doneAcres)} acres to go</div>
+            <div class="meta">${c.done} of ${c.fields} field${c.fields === 1 ? "" : "s"}</div>
+          </div>`;
+        });
+        html += `</div>`;
+      }
       html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:16px;margin-bottom:24px;">`;
       included.forEach((g) => {
         const st = harvestStats(byGroup.get(g));
@@ -3870,6 +3914,11 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
               cb.checked = !want;
             }
           });
+          const cropEl = document.createElement("span");
+          cropEl.className = "meta";
+          cropEl.setAttribute("data-role", "harvest-field-crop");
+          cropEl.style.minWidth = "110px";
+          cropEl.textContent = harvestCropLabel(f);
           const acres = document.createElement("span");
           acres.className = "meta";
           acres.style.minWidth = "70px";
@@ -3894,7 +3943,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
               sel.value = before;
             }
           });
-          [cb, name, acres, badge, sel].forEach((el) => row.appendChild(el));
+          [cb, name, cropEl, acres, badge, sel].forEach((el) => row.appendChild(el));
           details.appendChild(row);
         });
         root.appendChild(details);
@@ -3905,10 +3954,88 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       try { localStorage.setItem(HARVEST_EXCLUDED_KEY, JSON.stringify([...harvestExcluded])); } catch { /* not persisted this time — still applies for this visit */ }
     }
 
+    let harvestAddOpen = false;
+    const newFieldId = () => (window.crypto && crypto.randomUUID ? crypto.randomUUID() : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => { const r = (Math.random() * 16) | 0; return (c === "x" ? r : (r & 3) | 8).toString(16); }));
+    // A field the import missed. Needs the insert permission from add-field-insert.sql.
+    async function addField({ name, acres, status, crop, operation }) {
+      const clean = String(name || "").trim();
+      if (!clean) throw new Error("Type the field's name");
+      const ac = Number(acres);
+      if (acres === "" || acres == null || isNaN(ac) || ac <= 0) throw new Error("Type the acres (more than 0)");
+      if (!["organic", "transitional", "conventional"].includes(status)) throw new Error("Pick organic, transitional or conventional");
+      if (crop && !YIELD_CROPS.includes(crop)) throw new Error("Unknown crop");
+      const key = clean.toLowerCase().replace(/\s+/g, " ");
+      if (harvestFields.some((f) => String(f.name || "").trim().toLowerCase().replace(/\s+/g, " ") === key)) throw new Error(`There is already a field called "${clean}"`);
+      const row = { id: newFieldId(), name: clean, acres: ac, crop: crop || null, status, operation: OPERATIONS.includes(operation) ? operation : null };
+      const { error } = await supabase.from("fields").insert(row);
+      if (error) {
+        if (/row-level security|permission denied|policy/i.test(error.message)) throw new Error("the database won't let this login add fields yet — run add-field-insert.sql in the Supabase SQL Editor, then try again");
+        throw new Error(error.message);
+      }
+      const added = { ...row, harvested: false, harvested_at: null };
+      harvestFields.push(added);
+      if (yieldLoaded) yieldFields.push({ id: row.id, name: row.name, acres: row.acres, crop: row.crop, status: row.status, operation: row.operation });
+      return added;
+    }
+    function renderHarvestAddForm(host) {
+      host.innerHTML = "";
+      const btn = document.createElement("button");
+      btn.className = "small-btn gold";
+      btn.setAttribute("data-role", "harvest-add-btn");
+      btn.textContent = harvestAddOpen ? "− Close" : "+ Add field";
+      btn.addEventListener("click", () => { harvestAddOpen = !harvestAddOpen; renderHarvestAddForm(host); });
+      host.appendChild(btn);
+      if (!harvestAddOpen) return;
+      const form = document.createElement("div");
+      form.className = "item-card";
+      form.setAttribute("data-role", "harvest-add-form");
+      form.style.cssText = "display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:10px;padding:14px;";
+      const mk = (label, el, role) => { el.setAttribute("data-role", role); const l = document.createElement("label"); l.style.cssText = "display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted);"; l.append(label, el); form.appendChild(l); return el; };
+      const nameIn = mk("Field name", Object.assign(document.createElement("input"), { type: "text", placeholder: "e.g. Borstad 19" }), "harvest-add-name");
+      nameIn.style.width = "200px";
+      const acresIn = mk("Acres", Object.assign(document.createElement("input"), { type: "number", min: "0", step: "any", inputMode: "decimal" }), "harvest-add-acres");
+      acresIn.style.width = "90px";
+      const statusSel = mk("Status", document.createElement("select"), "harvest-add-status");
+      statusSel.innerHTML = `<option value="">Pick…</option><option value="organic">Organic</option><option value="transitional">Transitional</option><option value="conventional">Conventional</option>`;
+      const cropSel = mk("Crop (optional)", document.createElement("select"), "harvest-add-crop");
+      cropSel.innerHTML = `<option value="">Not set yet</option>` + YIELD_CROPS.map((c) => `<option value="${c}">${c}</option>`).join("");
+      const opSel = mk("Operation", document.createElement("select"), "harvest-add-operation");
+      opSel.innerHTML = `<option value="">Unassigned</option>` + OPERATIONS.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
+      opSel.value = OPERATIONS[0];
+      const save = document.createElement("button");
+      save.className = "small-btn gold";
+      save.setAttribute("data-role", "harvest-add-save");
+      save.textContent = "Add field";
+      const msg = document.createElement("span");
+      msg.className = "meta";
+      msg.setAttribute("data-role", "harvest-add-msg");
+      form.append(save, msg);
+      host.appendChild(form);
+      save.addEventListener("click", async () => {
+        save.disabled = true;
+        msg.style.color = ""; msg.textContent = "Adding…";
+        try {
+          const f = await addField({ name: nameIn.value, acres: acresIn.value, status: statusSel.value, crop: cropSel.value, operation: opSel.value });
+          // Make sure the new field is visible: its operation ticked on, its list open.
+          const g = harvestGroupOf(f);
+          harvestExcluded.delete(g); persistHarvestExcluded(); harvestOpen.add(g);
+          harvestAddOpen = true;
+          renderHarvest();
+          const m = document.querySelector("[data-role=harvest-add-msg]");
+          if (m) m.textContent = `Added ${f.name} (${fmtAcres(f.acres)} acres) to ${g}`;
+        } catch (err) {
+          msg.style.color = "var(--danger)";
+          msg.textContent = "Not added: " + err.message;
+          save.disabled = false;
+        }
+      });
+    }
+
     function renderHarvest() {
       const root = document.getElementById("harvest-content");
       const { byGroup, visible } = harvestGroups();
-      root.innerHTML = `<div id="harvest-toggles" style="display:flex;flex-wrap:wrap;gap:8px 18px;margin-bottom:16px;"></div><div id="harvest-pies"></div><div id="harvest-lists"></div>`;
+      root.innerHTML = `<div id="harvest-add" style="margin-bottom:14px;"></div><div id="harvest-toggles" style="display:flex;flex-wrap:wrap;gap:8px 18px;margin-bottom:16px;"></div><div id="harvest-pies"></div><div id="harvest-lists"></div>`;
+      renderHarvestAddForm(document.getElementById("harvest-add"));
       const toggles = document.getElementById("harvest-toggles");
       visible.forEach((g) => {
         const label = document.createElement("label");
