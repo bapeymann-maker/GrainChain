@@ -3818,7 +3818,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const pct = c.acres > 0 ? Math.round((c.doneAcres / c.acres) * 100) : 0;
         return `<div data-role="harvest-crop-line" data-crop="${escapeHtml(c.label)}" data-done-acres="${c.doneAcres.toFixed(2)}" data-acres="${c.acres.toFixed(2)}" style="display:flex;gap:10px;justify-content:space-between;padding:3px 0;border-top:1px solid var(--border);">
           <span>${escapeHtml(c.label)}</span>
-          <span style="white-space:nowrap;flex-shrink:0;"><b style="color:var(--gold);" data-role="harvest-crop-pct">${pct}%</b> <span class="meta" data-role="harvest-crop-left">· ${fmtAcres(c.acres - c.doneAcres)} ac to go</span></span>
+          <span style="white-space:nowrap;flex-shrink:0;"><b style="color:var(--gold);" data-role="harvest-crop-pct">${pct}%</b> <span class="meta" data-role="harvest-crop-fields">· ${c.done} of ${c.fields} field${c.fields === 1 ? "" : "s"}</span> <span class="meta" data-role="harvest-crop-left">· ${fmtAcres(c.acres - c.doneAcres)} ac to go</span></span>
         </div>`;
       }).join("") + `</div>`;
     }
