@@ -3810,6 +3810,19 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       return [...out.values()].sort((a, b) => order(a.label) - order(b.label));
     }
 
+    // One line per kind of grain under a pie: percent harvested (by acres planted) and the acres still to go.
+    function harvestCropLinesHtml(fields) {
+      const crops = harvestCropStats(fields);
+      if (crops.length === 0) return "";
+      return `<div data-role="harvest-crop-lines" style="margin-top:10px;text-align:left;font-size:12px;">` + crops.map((c) => {
+        const pct = c.acres > 0 ? Math.round((c.doneAcres / c.acres) * 100) : 0;
+        return `<div data-role="harvest-crop-line" data-crop="${escapeHtml(c.label)}" data-done-acres="${c.doneAcres.toFixed(2)}" data-acres="${c.acres.toFixed(2)}" style="display:flex;gap:10px;justify-content:space-between;padding:3px 0;border-top:1px solid var(--border);">
+          <span>${escapeHtml(c.label)}</span>
+          <span style="white-space:nowrap;flex-shrink:0;"><b style="color:var(--gold);" data-role="harvest-crop-pct">${pct}%</b> <span class="meta" data-role="harvest-crop-left">· ${fmtAcres(c.acres - c.doneAcres)} ac to go</span></span>
+        </div>`;
+      }).join("") + `</div>`;
+    }
+
     function renderHarvestPies() {
       const root = document.getElementById("harvest-pies");
       const { byGroup, included } = harvestGroups();
@@ -3827,38 +3840,22 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             <div style="font-size:15px;margin-top:2px;">${fmtAcres(all.doneAcres)} of ${fmtAcres(all.totalAcres)} acres harvested</div>
             <div class="meta">${all.done} of ${all.total} fields · ${fmtAcres(all.totalAcres - all.doneAcres)} acres to go</div>
             <div class="meta" style="margin-top:6px;">${included.map(escapeHtml).join(" · ")}</div>
+            ${harvestCropLinesHtml(included.flatMap((g) => byGroup.get(g)))}
           </div>`;
       }
       html += `</div>`;
-      // One pie per kind of grain, for the operations ticked above.
-      const crops = harvestCropStats(included.flatMap((g) => byGroup.get(g)));
-      if (crops.length > 0) {
-        html += `<div class="dash-section-title" data-role="harvest-crops-title">By crop — ${yieldSeason} season</div>
-          <div data-role="harvest-crops" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px;margin-bottom:24px;">`;
-        crops.forEach((c) => {
-          const frac = c.acres > 0 ? c.doneAcres / c.acres : 0;
-          html += `<div class="item-card" data-role="harvest-crop-card" data-crop="${escapeHtml(c.label)}" data-done-acres="${c.doneAcres.toFixed(2)}" data-acres="${c.acres.toFixed(2)}" style="text-align:center;padding:12px;">
-            <div style="font-weight:700;margin-bottom:8px;">${escapeHtml(c.label)}</div>
-            ${harvestPieSvg(frac, 110)}
-            <div style="font-size:20px;font-weight:700;color:var(--gold);margin-top:6px;" data-role="harvest-crop-pct">${Math.round(frac * 100)}%</div>
-            <div class="meta">${fmtAcres(c.doneAcres)} of ${fmtAcres(c.acres)} acres harvested</div>
-            <div class="meta" data-role="harvest-crop-left">${fmtAcres(c.acres - c.doneAcres)} acres to go</div>
-            <div class="meta">${c.done} of ${c.fields} field${c.fields === 1 ? "" : "s"}</div>
-          </div>`;
-        });
-        html += `</div>`;
-      }
-      html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:16px;margin-bottom:24px;">`;
+      html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:16px;margin-bottom:24px;">`;
       included.forEach((g) => {
         const st = harvestStats(byGroup.get(g));
-        html += `<div class="item-card" style="text-align:center;padding:14px;">
+        html += `<div class="item-card" data-role="harvest-op-card" data-op="${escapeHtml(g)}" style="text-align:center;padding:14px;">
           <div style="font-weight:700;margin-bottom:10px;">${escapeHtml(g)}</div>
           ${st.total === 0
             ? `<div class="meta" style="padding:50px 0;">No fields assigned yet.</div>`
             : `${harvestPieSvg(st.fraction)}
                <div style="font-size:22px;font-weight:700;color:var(--gold);margin-top:8px;">${Math.round(st.fraction * 100)}%</div>
                <div class="meta">${fmtAcres(st.doneAcres)} of ${fmtAcres(st.totalAcres)} acres harvested</div>
-               <div class="meta">${st.done} of ${st.total} fields · ${fmtAcres(st.totalAcres - st.doneAcres)} acres to go</div>`}
+               <div class="meta">${st.done} of ${st.total} fields · ${fmtAcres(st.totalAcres - st.doneAcres)} acres to go</div>
+               ${harvestCropLinesHtml(byGroup.get(g))}`}
         </div>`;
       });
       html += `</div>`;
