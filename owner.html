@@ -4883,10 +4883,12 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           const loaded = [...(contentsByBin.get(b.id) || [])].sort((x, y) => String(y.last_load_at || "").localeCompare(String(x.last_load_at || "")));
           const normC = (c) => (c === "Beans" ? "Soybeans" : c);
           const offPlan = b.crop && loaded.some((p) => p.crop && normC(p.crop) !== normC(b.crop));
+          const notOrganic = b.status === "organic" && loaded.some((p) => p.field_status && p.field_status !== "organic");
           const loadedCell = loaded.length === 0
             ? "—"
-            : loaded.slice(0, 4).map((p) => `<div data-role="bin-content-line" title="${escapeHtml(`${p.loads} load${p.loads === 1 ? "" : "s"}, last ${p.last_load_at ? new Date(p.last_load_at).toLocaleDateString() : "?"}`)}">${escapeHtml(p.crop || "crop not recorded")} — ${escapeHtml(p.field_name || "field not recorded")} <span class="meta">(${Math.round(Number(p.bushels) || 0).toLocaleString()} bu)</span></div>`).join("") +
+            : loaded.slice(0, 4).map((p) => `<div data-role="bin-content-line" title="${escapeHtml(`${p.loads} load${p.loads === 1 ? "" : "s"}, last ${p.last_load_at ? new Date(p.last_load_at).toLocaleDateString() : "?"}`)}">${escapeHtml(p.crop || "crop not recorded")} — ${escapeHtml(p.field_name || "field not recorded")} <span class="meta">(${Math.round(Number(p.bushels) || 0).toLocaleString()} bu${p.field_status ? ` · ${escapeHtml(p.field_status)}` : ""})</span></div>`).join("") +
               (loaded.length > 4 ? `<div class="meta">+ ${loaded.length - 4} more</div>` : "") +
+              (notOrganic ? `<div data-role="bin-not-organic" style="color:var(--danger);font-size:12px;">⚠ non-organic grain in an organic bin</div>` : "") +
               (offPlan ? `<div data-role="bin-off-plan" style="color:var(--danger);font-size:12px;">⚠ not the planned crop (${escapeHtml(b.crop)})</div>` : "");
           return `
             <tr>
