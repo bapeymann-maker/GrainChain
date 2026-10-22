@@ -806,21 +806,36 @@ function siteScreen() {
 }
 
 // Any bin can take any crop. A bin that was PLANNED for a different crop asks first.
-const binPlanMismatch = (b) => b.bin_type !== "wet" && !!b.crop && binCrop(b.crop) !== state.cropChoice;
-const binWarnKey = (b) => `${b.id}|${state.cropChoice}`;
+const loadStatus = () => (state.isBuffer ? "conventional" : state.field.status);
+// Why a bin is not exactly what this load was planned for. Empty = nothing to warn about.
+//  - crop: the bin is planned for a different crop
+//  - organic bin: organic-status grain only ever goes into organic bins with a clean affidavit (blocked
+//    elsewhere), but non-organic grain MAY be put into an organic bin — after a warning
+function binPlanNotes(b) {
+  if (b.bin_type === "wet") return [];
+  const notes = [];
+  if (b.status === "organic" && loadStatus() !== "organic") notes.push({ kind: "organic", text: `${b.name} is an ORGANIC bin. You're loading ${loadStatus()} grain${state.isBuffer ? " (buffer)" : ""}.` });
+  if (b.crop && binCrop(b.crop) !== state.cropChoice) notes.push({ kind: "crop", text: `${b.name} is planned for ${binCrop(b.crop)}. You're loading ${state.cropChoice} from ${state.field.name}.` });
+  return notes;
+}
+const binPlanMismatch = (b) => binPlanNotes(b).length > 0;
+const binWarnKey = (b) => `${b.id}|${state.cropChoice}|${loadStatus()}`;
 
 function binWarnScreen() {
   const b = state.binWarn;
   const wrap = h("div", { "data-role": "bin-warning", style: "display:flex;flex-direction:column;gap:16px;" });
-  wrap.appendChild(h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.amber};` }, "⚠ This bin is planned for another crop"));
+  const notes = binPlanNotes(b);
+  const kinds = notes.map((n) => n.kind);
+  const title = kinds.length > 1 ? "⚠ Check this bin" : kinds[0] === "organic" ? "⚠ This is an organic bin" : "⚠ This bin is planned for another crop";
+  wrap.appendChild(h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.amber};` }, title));
   wrap.appendChild(
     h(
       "div",
-      { style: `font-size:16px;color:${COLORS.text};background:${COLORS.amberDark};border:1px solid ${COLORS.amber};border-radius:10px;padding:16px 18px;line-height:1.5;` },
+      { style: `font-size:16px;color:${COLORS.text};background:${COLORS.amberDark};border:1px solid ${COLORS.amber};border-radius:10px;padding:16px 18px;line-height:1.5;display:flex;flex-direction:column;gap:6px;` },
       [
-        h("div", { style: "font-weight:700;" }, `${b.name} (${siteLabel(b.site)}) is planned for ${binCrop(b.crop)}.`),
-        h("div", {}, `You're loading ${state.cropChoice} from ${state.field.name}.`),
-        h("div", { style: "margin-top:8px;" }, "Do you want to proceed?"),
+        ...notes.map((n) => h("div", { style: "font-weight:700;" }, n.text.replace(` is planned for`, ` (${siteLabel(b.site)}) is planned for`))),
+        ...(kinds.includes("organic") ? [h("div", {}, "Non-organic grain in an organic bin can end the bin's organic status until it is cleaned out.")] : []),
+        h("div", { style: "margin-top:4px;" }, "Do you want to proceed?"),
       ]
     )
   );
@@ -871,7 +886,7 @@ function binScreen() {
     ]
   );
   wrap.appendChild(bufferLabel);
-  wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-top:-4px;` }, "Bins that can't take this load are grayed out and explain why. A bin planned for a different crop will ask you first."));
+  wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-top:-4px;` }, "Bins that can't take this load are grayed out and explain why. A bin planned for a different crop, or an organic bin for non-organic grain, will ask you first."));
 
   // Bins at the site picked on the previous step — storage or wet bins only,
   // not loadout or not-yet-built bins. Danube and Fairfax never get here
@@ -894,13 +909,9 @@ function binScreen() {
       // to the dryer or on to another bin, so they take any status and any
       // crop.
       const isWetStaging = b.bin_type === "wet";
-      const statusOk =
-        isWetStaging ||
-        (effectiveStatus === "organic"
-          ? b.status === "organic" && b.affidavit
-          : effectiveStatus === "transitional"
-          ? b.status === "transitional" || b.status === "conventional"
-          : b.status !== "organic");
+      // Organic grain keeps its hard rules (organic bin + clean affidavit). Non-organic grain may go into ANY bin,
+      // including an organic one — that, and a different planned crop, ask first (binWarnScreen).
+      const statusOk = isWetStaging || (effectiveStatus === "organic" ? b.status === "organic" && b.affidavit : true);
       // The crop a bin was planned for no longer blocks a load — it only asks first (binWarnScreen).
       const planMismatch = binPlanMismatch(b);
       const compatible = statusOk;
@@ -909,8 +920,6 @@ function binScreen() {
           ? "Needs a clean bin affidavit before organic use"
           : effectiveStatus === "organic" && b.status !== "organic"
           ? "Not an organic bin"
-          : effectiveStatus !== "organic" && b.status === "organic"
-          ? "Reserved for organic grain"
           : ""
         : "";
       const selected = compatible && state.bin && state.bin.id === b.id;
@@ -939,7 +948,7 @@ function binScreen() {
               h(
                 "div",
                 { style: `font-size:13px;color:${!compatible ? COLORS.danger : planMismatch ? COLORS.amber : selected ? COLORS.gold : COLORS.textMuted};` },
-                !compatible ? reason : planMismatch ? `Planned for ${binCrop(b.crop)} · ${b.pct}% full` : selected ? "Same as last load" : `${b.pct}% full`
+                !compatible ? reason : planMismatch ? [...binPlanNotes(b).map((n) => (n.kind === "organic" ? "Organic bin" : `Planned for ${binCrop(b.crop)}`)), `${b.pct}% full`].join(" · ") : selected ? "Same as last load" : `${b.pct}% full`
               ),
             ]),
             isWetStaging
@@ -985,7 +994,7 @@ function confirmScreen() {
     ...(testWeight ? [["Test weight", `${testWeight} lb/bu`]] : []),
     ["Bin site", siteLabel(bin.site)],
     ["Destination bin", bin.name],
-    ...(binPlanMismatch(bin) ? [["Bin plan", `⚠ planned for ${binCrop(bin.crop)} — loading ${state.cropChoice} anyway`]] : []),
+    ...(binPlanMismatch(bin) ? [["Bin plan", binPlanNotes(bin).map((n) => (n.kind === "organic" ? `⚠ organic bin — loading ${loadStatus()} grain anyway` : `⚠ planned for ${binCrop(bin.crop)} — loading ${state.cropChoice} anyway`)).join("; ")]] : []),
   ];
 
   const card = h("div", {
