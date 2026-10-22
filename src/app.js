@@ -155,6 +155,8 @@ const state = {
   field: null,
   bin: null,
   site: null, // farm site picked on the Bin Site step
+  binWarn: null, // a bin planned for a different crop, waiting for "proceed?"
+  binWarnOk: null, // "binId|crop" already confirmed this session, so repeat loads aren't asked again
   truck: null,
   truckMode: null, // "full" | "notFull" | "buffer"
   weight: "",
@@ -305,6 +307,7 @@ function clearTruckFields() {
     moisture: "",
     testWeight: "",
     isBuffer: false,
+    binWarn: null,
   });
 }
 
@@ -318,6 +321,7 @@ function changeFieldAndBin() {
   state.bin = null;
   state.site = null;
   state.cropChoice = null;
+  state.binWarnOk = null;
   clearTruckFields();
   setState({ screen: "crop" });
 }
@@ -326,6 +330,7 @@ function logOut() {
   // Field/bin stay selected on purpose — the kiosk is shared across
   // workers back-to-back on the same field/bin during a harvest run.
   state.worker = null;
+  state.binWarnOk = null; // the next worker sees the bin-plan warning again
   clearTruckFields();
   setState({ screen: "login", pin: "" });
 }
@@ -800,6 +805,39 @@ function siteScreen() {
   return wrap;
 }
 
+// Any bin can take any crop. A bin that was PLANNED for a different crop asks first.
+const binPlanMismatch = (b) => b.bin_type !== "wet" && !!b.crop && binCrop(b.crop) !== state.cropChoice;
+const binWarnKey = (b) => `${b.id}|${state.cropChoice}`;
+
+function binWarnScreen() {
+  const b = state.binWarn;
+  const wrap = h("div", { "data-role": "bin-warning", style: "display:flex;flex-direction:column;gap:16px;" });
+  wrap.appendChild(h("div", { style: `${HEAD}font-size:22px;font-weight:700;color:${COLORS.amber};` }, "⚠ This bin is planned for another crop"));
+  wrap.appendChild(
+    h(
+      "div",
+      { style: `font-size:16px;color:${COLORS.text};background:${COLORS.amberDark};border:1px solid ${COLORS.amber};border-radius:10px;padding:16px 18px;line-height:1.5;` },
+      [
+        h("div", { style: "font-weight:700;" }, `${b.name} (${siteLabel(b.site)}) is planned for ${binCrop(b.crop)}.`),
+        h("div", {}, `You're loading ${state.cropChoice} from ${state.field.name}.`),
+        h("div", { style: "margin-top:8px;" }, "Do you want to proceed?"),
+      ]
+    )
+  );
+  wrap.appendChild(
+    bigButton(`Yes — load ${state.cropChoice} into ${b.name}`, {
+      tone: "gold",
+      onClick: () => {
+        state.bin = b;
+        state.binWarnOk = binWarnKey(b);
+        setState({ binWarn: null, screen: "confirm" });
+      },
+    })
+  );
+  wrap.appendChild(bigButton("No — pick a different bin", { onClick: () => setState({ binWarn: null }) }));
+  return wrap;
+}
+
 function binScreen() {
   if (!state.field) {
     setState({ screen: "field" });
@@ -809,6 +847,7 @@ function binScreen() {
     setState({ screen: "site" });
     return h("div");
   }
+  if (state.binWarn) return binWarnScreen();
   const wrap = h("div", { style: "display:flex;flex-direction:column;gap:14px;" });
   wrap.appendChild(
     h("div", { style: "display:flex;align-items:center;gap:10px;" }, [
@@ -832,7 +871,7 @@ function binScreen() {
     ]
   );
   wrap.appendChild(bufferLabel);
-  wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-top:-4px;` }, "Bins that can't take this load are grayed out and explain why."));
+  wrap.appendChild(h("div", { style: `font-size:13px;color:${COLORS.textMuted};margin-top:-4px;` }, "Bins that can't take this load are grayed out and explain why. A bin planned for a different crop will ask you first."));
 
   // Bins at the site picked on the previous step — storage or wet bins only,
   // not loadout or not-yet-built bins. Danube and Fairfax never get here
@@ -862,8 +901,9 @@ function binScreen() {
           : effectiveStatus === "transitional"
           ? b.status === "transitional" || b.status === "conventional"
           : b.status !== "organic");
-      const cropOk = isWetStaging || !b.crop || binCrop(b.crop) === state.cropChoice;
-      const compatible = statusOk && cropOk;
+      // The crop a bin was planned for no longer blocks a load — it only asks first (binWarnScreen).
+      const planMismatch = binPlanMismatch(b);
+      const compatible = statusOk;
       const reason = !statusOk
         ? effectiveStatus === "organic" && b.status === "organic" && !b.affidavit
           ? "Needs a clean bin affidavit before organic use"
@@ -872,8 +912,6 @@ function binScreen() {
           : effectiveStatus !== "organic" && b.status === "organic"
           ? "Reserved for organic grain"
           : ""
-        : !cropOk
-        ? `Reserved for ${binCrop(b.crop)}`
         : "";
       const selected = compatible && state.bin && state.bin.id === b.id;
       list.appendChild(
@@ -883,8 +921,13 @@ function binScreen() {
             style: `${BODY}display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-radius:10px;border:1px solid ${!compatible ? COLORS.dangerDark : selected ? COLORS.gold : COLORS.border};background:${!compatible ? COLORS.dangerDark : selected ? COLORS.goldDark : COLORS.panelAlt};color:${!compatible ? COLORS.danger : selected ? COLORS.gold : COLORS.text};cursor:${compatible ? "pointer" : "not-allowed"};opacity:${compatible ? 1 : 0.75};text-align:left;`,
             disabled: !compatible,
             "data-selected": selected ? "true" : null,
+            "data-plan-mismatch": planMismatch ? "true" : null,
             onclick: compatible
               ? () => {
+                  if (planMismatch && state.binWarnOk !== binWarnKey(b)) {
+                    setState({ binWarn: b });
+                    return;
+                  }
                   state.bin = b;
                   setState({ screen: "confirm" });
                 }
@@ -895,8 +938,8 @@ function binScreen() {
               h("div", { style: "font-size:16px;font-weight:600;" }, b.name),
               h(
                 "div",
-                { style: `font-size:13px;color:${!compatible ? COLORS.danger : selected ? COLORS.gold : COLORS.textMuted};` },
-                !compatible ? reason : selected ? "Same as last load" : `${b.pct}% full`
+                { style: `font-size:13px;color:${!compatible ? COLORS.danger : planMismatch ? COLORS.amber : selected ? COLORS.gold : COLORS.textMuted};` },
+                !compatible ? reason : planMismatch ? `Planned for ${binCrop(b.crop)} · ${b.pct}% full` : selected ? "Same as last load" : `${b.pct}% full`
               ),
             ]),
             isWetStaging
@@ -915,7 +958,7 @@ function binScreen() {
     wrap.appendChild(list);
   }
 
-  wrap.appendChild(linkButton("← Back", () => setState({ screen: "site" })));
+  wrap.appendChild(linkButton("← Back", () => setState({ binWarn: null, screen: "site" })));
   wrap.appendChild(cancelLoadButton());
   return wrap;
 }
@@ -942,6 +985,7 @@ function confirmScreen() {
     ...(testWeight ? [["Test weight", `${testWeight} lb/bu`]] : []),
     ["Bin site", siteLabel(bin.site)],
     ["Destination bin", bin.name],
+    ...(binPlanMismatch(bin) ? [["Bin plan", `⚠ planned for ${binCrop(bin.crop)} — loading ${state.cropChoice} anyway`]] : []),
   ];
 
   const card = h("div", {

@@ -4841,6 +4841,10 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         supabase.from("dryer_live_estimates").select("*"),
       ]);
       const { data: binRows, error: binErr } = await supabase.from("bin_levels").select("*");
+      // What was loaded into each bin: crop + source field (bin_contents view, add-bin-contents.sql)
+      const { data: contentRows, error: contentErr } = await supabase.from("bin_contents").select("*");
+      const contentsByBin = new Map();
+      (contentRows || []).forEach((r) => { if (!contentsByBin.has(r.bin_id)) contentsByBin.set(r.bin_id, []); contentsByBin.get(r.bin_id).push(r); });
       const binNameById = new Map((binRows || []).map((b) => [b.id, b.name]));
       const liveEstimateByRun = new Map((dryerLiveRows || []).map((r) => [r.run_client_id, r.estimated_bushels]));
       if ((dryerStatusRows || []).length) {
@@ -4875,11 +4879,21 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           const pct = b.pct || 0;
           const statusCell = b.status ? `<span class="badge badge-${b.status}">${escapeHtml(b.status)}</span>` : "—";
           const splitCell = b.split_partner_id ? `${escapeHtml(partnerName(b.split_partner_id))} ${b.split_pct}%` : "—";
+          // Crop and source field of what was loaded into this bin, newest first, plus a flag when it isn't what the bin was planned for.
+          const loaded = [...(contentsByBin.get(b.id) || [])].sort((x, y) => String(y.last_load_at || "").localeCompare(String(x.last_load_at || "")));
+          const normC = (c) => (c === "Beans" ? "Soybeans" : c);
+          const offPlan = b.crop && loaded.some((p) => p.crop && normC(p.crop) !== normC(b.crop));
+          const loadedCell = loaded.length === 0
+            ? "—"
+            : loaded.slice(0, 4).map((p) => `<div data-role="bin-content-line" title="${escapeHtml(`${p.loads} load${p.loads === 1 ? "" : "s"}, last ${p.last_load_at ? new Date(p.last_load_at).toLocaleDateString() : "?"}`)}">${escapeHtml(p.crop || "crop not recorded")} — ${escapeHtml(p.field_name || "field not recorded")} <span class="meta">(${Math.round(Number(p.bushels) || 0).toLocaleString()} bu)</span></div>`).join("") +
+              (loaded.length > 4 ? `<div class="meta">+ ${loaded.length - 4} more</div>` : "") +
+              (offPlan ? `<div data-role="bin-off-plan" style="color:var(--danger);font-size:12px;">⚠ not the planned crop (${escapeHtml(b.crop)})</div>` : "");
           return `
             <tr>
               <td>${escapeHtml(b.site || "—")}</td>
               <td>${escapeHtml(b.name || "—")}</td>
               <td>${escapeHtml(b.crop || "—")}</td>
+              <td data-role="bin-loaded" style="font-size:13px;">${loadedCell}</td>
               <td>${statusCell}</td>
               <td>${splitCell}</td>
               <td>${Number(b.bushels_in_bin || 0).toLocaleString()} bu</td>
@@ -4894,8 +4908,8 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           ? `<div style="color:var(--text-muted);font-size:13px;">No bins on file.</div>`
           : `<table style="margin-bottom:8px;">
               <thead><tr>
-                <th style="cursor:default;">Site</th><th style="cursor:default;">Bin</th><th style="cursor:default;">Crop</th>
-                <th style="cursor:default;">Status</th><th style="cursor:default;">Split</th>
+                <th style="cursor:default;">Site</th><th style="cursor:default;">Bin</th><th style="cursor:default;">Planned crop</th>
+                <th style="cursor:default;" title="Crop and field of every field load logged into this bin">Loaded into bin (crop — field)</th><th style="cursor:default;">Status</th><th style="cursor:default;">Split</th>
                 <th style="cursor:default;">Bushels</th><th style="cursor:default;">Capacity</th><th style="cursor:default;">Fill</th>
               </tr></thead>
               <tbody>${binRowsHtml}</tbody>
@@ -4904,6 +4918,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       if (ctErr) html += `<div style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load contract assignments for the dollar estimate: ${escapeHtml(ctErr.message)}</div>`;
       if (psErr) html += `<div style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load partner settlement history: ${escapeHtml(psErr.message)}</div>`;
       if (binErr) html += `<div style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load bin inventory: ${escapeHtml(binErr.message)}</div>`;
+      if (contentErr) html += `<div data-role="bin-contents-error" style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load what was loaded into each bin — run add-bin-contents.sql in the Supabase SQL Editor (${escapeHtml(contentErr.message)})</div>`;
 
       dashContentEl.innerHTML = html;
       dashContentEl.querySelectorAll("[data-mark-settled]").forEach((btn) => {
