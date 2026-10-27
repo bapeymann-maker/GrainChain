@@ -194,6 +194,7 @@
         <option value="">All destinations</option>
       </select>
       <button id="hauls-csv-btn" style="display:none;">Download CSV</button>
+      <button id="loads-add-btn" title="Enter a field-to-bin load by hand — for a load that was hauled but never logged on the kiosk">+ Add load</button>
       <button id="hauls-scan-btn" style="display:none;" title="Enter a haul and its scale ticket by taking or choosing a photo of the ticket">Scan a ticket</button>
       <label id="hauls-diff-wrap" style="display:none;align-items:center;gap:6px;font-size:13px;cursor:pointer;" title="Only the tickets where the driver's bushels and the AI's reading aren't the same — the ones that make the two totals disagree"><input type="checkbox" id="hauls-diff-only" /> Differences only</label>
       <button id="view-dashboard-btn" class="view-btn">Dashboard</button>
@@ -395,6 +396,7 @@
     const destinationFilterEl = document.getElementById("destination-filter");
     const haulsCsvBtnEl = document.getElementById("hauls-csv-btn");
     const haulsScanBtnEl = document.getElementById("hauls-scan-btn");
+    const loadsAddBtnEl = document.getElementById("loads-add-btn");
     const haulsDiffWrapEl = document.getElementById("hauls-diff-wrap");
     const haulsDiffOnlyEl = document.getElementById("hauls-diff-only");
     const refreshBtn = document.getElementById("refresh-btn");
@@ -831,6 +833,7 @@
       destinationFilterEl.style.display = mode === "hauls" ? "" : "none";
       haulsCsvBtnEl.style.display = mode === "hauls" ? "" : "none";
       haulsScanBtnEl.style.display = mode === "hauls" ? "" : "none";
+      loadsAddBtnEl.style.display = mode === "loads" ? "" : "none";
       haulsDiffWrapEl.style.display = mode === "hauls" ? "flex" : "none";
 
       if (mode === "hauls" && !haulsLoaded) await fetchHauls();
@@ -954,6 +957,7 @@
         moisture_raw: l.moisture_pct,
         test_weight_raw: l.test_weight,
         crop_raw: l.crop || l.fields?.crop || null,
+        by_hand: typeof l.device_id === "string" && l.device_id.startsWith("owner-entry:") ? "Entered on the owner page by " + l.device_id.slice(12) : "",
         raw: l, // the database row itself, for the editor
       }));
       statusLine.textContent = `${allLoads.length} load${allLoads.length === 1 ? "" : "s"}`;
@@ -1010,7 +1014,7 @@
           ? `<span class="badge badge-${r.status}">${r.status[0].toUpperCase()}${r.status.slice(1)}</span>`
           : "—";
         tr.innerHTML = `
-          <td>${time}</td>
+          <td>${time}${r.by_hand ? ` <span class="meta" data-role="by-hand-tag" title="${escapeHtml(r.by_hand)}">entered by hand</span>` : ""}</td>
           <td>${escapeHtml(r.worker)}</td>
           <td>${escapeHtml(r.field)}</td>
           <td>${escapeHtml(r.crop)}</td>
@@ -3051,6 +3055,136 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const L = await getEditLookups();
       openEditor({ title: "Edit field-to-bin load", sections: [loadSection(raw, L)], onSaved: async () => { await fetchLoads(); } });
     }
+
+    // ---- entering a field-to-bin load by hand ----
+    // For a load that was hauled but never logged on the kiosk. Saved through
+    // owner_create_load (allow-owner-add-loads.sql): needs the 2FA code, and
+    // the database stamps who entered it.
+    async function addLoad() {
+      if (!(await ensureEditSession())) return;
+      const [L, bRes, fRes] = await Promise.all([
+        getEditLookups(),
+        supabase.from("bins").select("id, name, status, crop, bin_type"),
+        supabase.from("fields").select("id, name, crop, status"),
+      ]);
+      const binRows = bRes.data || [], fieldRows = fRes.data || [];
+      const normCrop = (c) => (c === "Beans" ? "Soybeans" : c);
+      const sec = {
+        table: "loads", pk: "client_id",
+        record: { logged_at: new Date().toISOString(), truck_mode: "full", is_buffer: false },
+        fields: [
+          { key: "logged_at", label: "Date & time", type: "datetime", required: true },
+          selectDef("worker_id", "Worker", L.workers, { required: true, allowEmpty: true }),
+          selectDef("field_id", "Field", L.fields, { required: true, allowEmpty: true }),
+          selectDef("bin_id", "Bin", L.bins, { required: true, allowEmpty: true }),
+          selectDef("crop", "Crop", CROP_OPTS, { required: true, allowEmpty: true }),
+          selectDef("truck", "Trailer", [...TRAILER_OPTS, opt("External", "External trailer")], { allowEmpty: true }),
+          selectDef("truck_mode", "Load type", [opt("full", "Full load"), opt("notFull", "Not a full load"), opt("buffer", "Buffer truck")], { allowEmpty: true }),
+          { key: "bushels", label: "Bushels", type: "number", min: 0 },
+          { key: "weight_lb", label: "Weight (lb, estimated)", type: "number", min: 0 },
+          { key: "moisture_pct", label: "Moisture %", type: "number", min: 0, max: 100 },
+          { key: "test_weight", label: "Test weight", type: "number", min: 0, max: 100 },
+          { key: "is_buffer", label: "Buffer truck (counts as conventional)", type: "bool" },
+        ],
+        validate: (v) => {
+          const errs = [];
+          if (!(v.bushels > 0) && !(v.weight_lb > 0)) errs.push("Enter the bushels or the weight — more than zero — so the bin level can count this load.");
+          return errs;
+        },
+      };
+      const m = openModal("Add a field-to-bin load");
+      m.box.setAttribute("data-role", "add-load-modal");
+      const intro = document.createElement("div");
+      intro.className = "meta";
+      intro.style.marginBottom = "8px";
+      intro.textContent = "For a load that was never logged on the kiosk. It counts toward the bin level straight away, and is marked \"entered by hand\".";
+      m.box.appendChild(intro);
+      const grid = document.createElement("div");
+      grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;";
+      const inputs = {};
+      sec.fields.forEach((def) => {
+        const label = document.createElement("label");
+        if (def.type === "bool") label.className = "check";
+        const text = document.createElement("span");
+        text.textContent = def.label + (def.required ? " *" : "");
+        const input = buildFieldInput(def, sec.record[def.key]);
+        inputs[def.key] = input;
+        if (def.type === "bool") { label.appendChild(input); label.appendChild(text); } else { label.appendChild(text); label.appendChild(input); }
+        grid.appendChild(label);
+      });
+      m.box.appendChild(grid);
+      const sx = { sec, inputs };
+
+      // What's worth a second look about this field + bin + crop (same rules as the kiosk's warning).
+      const planNotes = (v) => {
+        const bin = binRows.find((b) => b.id === v.bin_id), field = fieldRows.find((f) => f.id === v.field_id);
+        if (!bin || !field || bin.bin_type === "wet") return [];
+        const status = v.is_buffer ? "conventional" : field.status;
+        const notes = [];
+        if (bin.status === "organic" && status !== "organic") notes.push(`${bin.name} is an ORGANIC bin and this is ${status} grain${v.is_buffer ? " (buffer)" : ""}. Non-organic grain in an organic bin can end the bin's organic status until it is cleaned out.`);
+        if (status === "organic" && bin.status !== "organic") notes.push(`This is ORGANIC grain going into ${bin.name}, which is not an organic bin.`);
+        if (bin.crop && v.crop && normCrop(bin.crop) !== v.crop) notes.push(`${bin.name} is planned for ${normCrop(bin.crop)}; this load is ${v.crop} from ${field.name}.`);
+        return notes;
+      };
+      const noteEl = document.createElement("div");
+      noteEl.className = "modal-note";
+      noteEl.setAttribute("data-role", "add-load-plan-note");
+      noteEl.style.cssText = "margin-top:8px;color:var(--danger,#b3261e);";
+      m.box.appendChild(noteEl);
+      const refreshNote = () => { noteEl.textContent = planNotes(collectSection(sx).values).map((n) => "⚠ " + n).join("\n"); };
+      // picking a field fills in its crop (if none chosen yet)
+      inputs.field_id.addEventListener("change", () => {
+        const f = fieldRows.find((x) => x.id === inputs.field_id.value);
+        if (f && f.crop && !inputs.crop.value && CROP_OPTS.some((o) => o.value === normCrop(f.crop))) inputs.crop.value = normCrop(f.crop);
+        refreshNote();
+      });
+      ["bin_id", "crop", "is_buffer"].forEach((k) => inputs[k].addEventListener("change", refreshNote));
+
+      const msg = document.createElement("div");
+      msg.setAttribute("data-role", "add-load-message");
+      m.box.appendChild(msg);
+      const say = (text, kind) => { msg.className = kind === "error" ? "modal-error" : "modal-note"; msg.textContent = text; };
+      const actions = document.createElement("div");
+      actions.className = "modal-actions";
+      const cancel = document.createElement("button");
+      cancel.className = "small-btn"; cancel.textContent = "Cancel"; cancel.setAttribute("data-role", "add-load-cancel");
+      cancel.addEventListener("click", m.close);
+      const save = document.createElement("button");
+      save.className = "small-btn gold"; save.textContent = "Save load"; save.setAttribute("data-role", "add-load-save");
+      actions.appendChild(cancel); actions.appendChild(save);
+      m.box.appendChild(actions);
+
+      save.addEventListener("click", async () => {
+        say("");
+        const r = collectSection(sx);
+        if (r.errors.length) return say(r.errors.join("\n"), "error");
+        const v = r.values;
+        const notes = planNotes(v);
+        if (notes.length && !window.confirm(notes.join("\n\n") + "\n\nEnter this load anyway?")) return;
+        const day = (iso) => new Date(iso).toDateString();
+        const dup = allLoads.find((x) => x.field_id === v.field_id && x.raw.bin_id === v.bin_id && day(x.logged_at) === day(v.logged_at)
+          && ((v.bushels != null && x.bushels_raw === v.bushels) || (v.bushels == null && v.weight_lb != null && x.weight_lb_raw === v.weight_lb)));
+        if (dup && !window.confirm("A load with the same field, bin, day and amount is already on file. Enter this one again anyway?")) return;
+        const row = {
+          client_id: crypto.randomUUID(), logged_at: v.logged_at, worker_id: v.worker_id, field_id: v.field_id, crop: v.crop,
+          truck: v.truck, truck_mode: v.is_buffer ? "buffer" : v.truck_mode, bushels: v.bushels, weight_lb: v.weight_lb,
+          moisture_pct: v.moisture_pct, test_weight: v.test_weight, bin_id: v.bin_id, is_buffer: !!v.is_buffer,
+        };
+        save.disabled = true;
+        const { error } = await supabase.rpc("owner_create_load", { p_load: row });
+        if (error) {
+          save.disabled = false;
+          if (/Two-step sign-in required/i.test(error.message)) { say("NOT saved — your sign-in hasn't confirmed its authenticator code. Confirm it, then press Save again.", "error"); ensureEditSession(); }
+          else if (/could not find the function|PGRST202/i.test(error.message) || error.code === "PGRST202") say("NOT saved — entering loads by hand isn't set up yet. Run allow-owner-add-loads.sql in the Supabase SQL Editor, then reload this page.", "error");
+          else say("NOT saved — " + error.message, "error");
+          return;
+        }
+        m.close();
+        await fetchLoads();
+        statusLine.textContent = `Saved ✓ — load added to ${binRows.find((b) => b.id === v.bin_id)?.name || "the bin"}`;
+      });
+    }
+    loadsAddBtnEl.addEventListener("click", addLoad);
     async function editHaul(h) {
       if (!(await ensureEditSession())) return;
       const L = await getEditLookups();
@@ -4883,10 +5017,12 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           const loaded = [...(contentsByBin.get(b.id) || [])].sort((x, y) => String(y.last_load_at || "").localeCompare(String(x.last_load_at || "")));
           const normC = (c) => (c === "Beans" ? "Soybeans" : c);
           const offPlan = b.crop && loaded.some((p) => p.crop && normC(p.crop) !== normC(b.crop));
+          const notOrganic = b.status === "organic" && loaded.some((p) => p.field_status && p.field_status !== "organic");
           const loadedCell = loaded.length === 0
             ? "—"
-            : loaded.slice(0, 4).map((p) => `<div data-role="bin-content-line" title="${escapeHtml(`${p.loads} load${p.loads === 1 ? "" : "s"}, last ${p.last_load_at ? new Date(p.last_load_at).toLocaleDateString() : "?"}`)}">${escapeHtml(p.crop || "crop not recorded")} — ${escapeHtml(p.field_name || "field not recorded")} <span class="meta">(${Math.round(Number(p.bushels) || 0).toLocaleString()} bu)</span></div>`).join("") +
+            : loaded.slice(0, 4).map((p) => `<div data-role="bin-content-line" title="${escapeHtml(`${p.loads} load${p.loads === 1 ? "" : "s"}, last ${p.last_load_at ? new Date(p.last_load_at).toLocaleDateString() : "?"}`)}">${escapeHtml(p.crop || "crop not recorded")} — ${escapeHtml(p.field_name || "field not recorded")} <span class="meta">(${Math.round(Number(p.bushels) || 0).toLocaleString()} bu${p.field_status ? ` · ${escapeHtml(p.field_status)}` : ""})</span></div>`).join("") +
               (loaded.length > 4 ? `<div class="meta">+ ${loaded.length - 4} more</div>` : "") +
+              (notOrganic ? `<div data-role="bin-not-organic" style="color:var(--danger);font-size:12px;">⚠ non-organic grain in an organic bin</div>` : "") +
               (offPlan ? `<div data-role="bin-off-plan" style="color:var(--danger);font-size:12px;">⚠ not the planned crop (${escapeHtml(b.crop)})</div>` : "");
           return `
             <tr>
