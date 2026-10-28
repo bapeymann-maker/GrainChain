@@ -3190,6 +3190,170 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       });
     }
     loadsAddBtnEl.addEventListener("click", addLoad);
+
+    // =====================================================================
+    // Bin-to-bin transfer (add-bin-transfers.sql). Takes bushels out of one
+    // bin and puts them in another. The crop/field record moves in
+    // proportion to what the source bin holds, so "Loaded into bin" stays
+    // right. Saved through owner_create_transfer (needs the 2FA code).
+    // =====================================================================
+    const TRANSFER_STD_LB = { Corn: 56, Soybeans: 60, Oats: 32 };
+    // The same sharing-out the database does: each line of the source's record gives up its share,
+    // never more than it holds; what the record can't account for moves as "origin not recorded".
+    function transferParts(contents, bushels, crop) {
+      const lines = (contents || []).filter((c) => Number(c.bushels) > 0.005);
+      const total = lines.reduce((n, c) => n + Number(c.bushels), 0);
+      const parts = [];
+      let moved = 0;
+      if (total > 0) {
+        lines.slice().sort((a, b) => String(a.crop).localeCompare(String(b.crop)) || String(a.field_id).localeCompare(String(b.field_id))).forEach((c) => {
+          const part = Math.round(Math.min(Number(c.bushels), (bushels * Number(c.bushels)) / total) * 1e4) / 1e4;
+          if (part > 0) { parts.push({ crop: c.crop, field_id: c.field_id, field_name: c.field_name, field_status: c.field_status, bushels: part }); moved += part; }
+        });
+      }
+      if (bushels - moved > 0.005) parts.push({ crop, field_id: null, field_name: null, field_status: null, bushels: Math.round((bushels - moved) * 1e4) / 1e4 });
+      return parts;
+    }
+    async function openTransfer() {
+      if (!(await ensureEditSession())) return;
+      const [lv, ct] = await Promise.all([supabase.from("bin_levels").select("*"), supabase.from("bin_contents").select("*")]);
+      const bins = (lv.data || []).filter((b) => b.active !== false).sort((a, b) => (a.site || "").localeCompare(b.site || "") || (a.name || "").localeCompare(b.name || ""));
+      const contentsOf = (id) => (ct.data || []).filter((c) => c.bin_id === id);
+      const normCrop = (c) => (c === "Beans" ? "Soybeans" : c);
+      const fmt = (n) => Math.round(Number(n) || 0).toLocaleString();
+      const m = openModal("Transfer grain from one bin to another");
+      m.box.setAttribute("data-role", "transfer-modal");
+      m.box.appendChild(mk("div", { className: "meta", style: "margin-bottom:8px;", text: "Takes the bushels out of the first bin and puts them in the second. What was loaded into the first bin (crop and field) moves along in proportion." }));
+      const binOpts = [opt("", "— choose —"), ...bins.map((b) => opt(b.id, `${b.site ? b.site + " · " : ""}${b.name} — ${fmt(b.bushels_in_bin)} bu`))];
+      const defs = [
+        { key: "transferred_at", label: "Date & time", type: "datetime", required: true },
+        { key: "from_bin_id", label: "From bin", type: "select", required: true, options: () => binOpts },
+        { key: "to_bin_id", label: "To bin", type: "select", required: true, options: () => binOpts },
+        { key: "crop", label: "Crop", type: "select", required: true, options: () => [opt("", "— choose —"), ...CROP_OPTS] },
+        { key: "bushels", label: "Bushels", type: "number", min: 0 },
+        { key: "weight_lb", label: "…or pounds (fills in the bushels)", type: "number", min: 0 },
+        { key: "moisture_pct", label: "Moisture %", type: "number", min: 0, max: 100 },
+        { key: "notes", label: "Notes", type: "text" },
+      ];
+      const rec = { transferred_at: new Date().toISOString() };
+      const grid = mk("div", { style: "display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;" });
+      const inputs = {};
+      defs.forEach((def) => {
+        const label = mk("label");
+        label.appendChild(mk("span", { text: def.label + (def.required ? " *" : "") }));
+        const input = buildFieldInput(def, rec[def.key]);
+        if (def.type === "select") input.value = "";
+        inputs[def.key] = input; label.appendChild(input); grid.appendChild(label);
+      });
+      m.box.appendChild(grid);
+      const sx = { sec: { fields: defs, record: rec }, inputs };
+      const info = mk("div", { "data-role": "transfer-info", className: "meta", style: "margin-top:10px;white-space:pre-line;" });
+      const warnEl = mk("div", { "data-role": "transfer-warnings", className: "modal-note", style: "margin-top:6px;color:var(--danger,#b3261e);white-space:pre-line;" });
+      m.box.appendChild(info); m.box.appendChild(warnEl);
+
+      const read = () => {
+        const { values: v } = collectSection(sx);
+        const from = bins.find((b) => b.id === v.from_bin_id), to = bins.find((b) => b.id === v.to_bin_id);
+        return { v, from, to };
+      };
+      function refresh() {
+        const { v, from, to } = read();
+        const lines = [], warns = [];
+        if (from) {
+          const cs = contentsOf(from.id).filter((c) => Number(c.bushels) > 0.005);
+          lines.push(`${from.name} holds ${fmt(from.bushels_in_bin)} bu` + (cs.length ? ` — recorded: ${cs.map((c) => `${c.crop || "?"} · ${c.field_name || "field not recorded"} ${fmt(c.bushels)} bu`).join("; ")}` : " — no crop/field record for it"));
+        }
+        if (to) lines.push(`${to.name} holds ${fmt(to.bushels_in_bin)} bu${to.capacity_k_bu != null ? ` of ${fmt(to.capacity_k_bu * 1000)}` : ""}`);
+        const bu = v.bushels;
+        if (from && bu > 0 && v.crop) {
+          const parts = transferParts(contentsOf(from.id), bu, v.crop);
+          lines.push("This moves: " + parts.map((p) => `${p.crop || "?"} · ${p.field_name || "origin not recorded"} ${fmt(p.bushels)} bu`).join("; "));
+          if (to) {
+            const orgSrc = from.status === "organic" || parts.some((p) => p.field_status === "organic");
+            const nonOrgSrc = parts.some((p) => p.field_status && p.field_status !== "organic");
+            if (to.status === "organic" && (nonOrgSrc || (from.status && from.status !== "organic"))) warns.push(`${to.name} is an ORGANIC bin and this grain is not all organic. Non-organic grain in an organic bin can end the bin's organic status until it is cleaned out.`);
+            if (to.status !== "organic" && orgSrc) warns.push(`This is ORGANIC grain going into ${to.name}, which is not an organic bin.`);
+            if (to.crop && normCrop(to.crop) !== v.crop) warns.push(`${to.name} is planned for ${normCrop(to.crop)}; this is ${v.crop}.`);
+            const other = contentsOf(to.id).filter((c) => Number(c.bushels) > 0.005 && c.crop && normCrop(c.crop) !== v.crop);
+            if (other.length) warns.push(`${to.name} already holds ${[...new Set(other.map((c) => normCrop(c.crop)))].join(", ")} — this would mix crops.`);
+            if (to.capacity_k_bu != null && Number(to.bushels_in_bin) + bu > to.capacity_k_bu * 1000) warns.push(`That would put ${to.name} over its ${fmt(to.capacity_k_bu * 1000)} bu capacity.`);
+          }
+          if (bu > Number(from.bushels_in_bin)) warns.push(`${from.name} is only showing ${fmt(from.bushels_in_bin)} bu, less than the ${fmt(bu)} bu you are moving.`);
+        }
+        info.textContent = lines.join("\n");
+        warnEl.textContent = warns.map((w) => "⚠ " + w).join("\n");
+        return warns;
+      }
+      // choosing the source suggests its crop; pounds fill in the bushels
+      inputs.from_bin_id.addEventListener("change", () => {
+        const { from } = read();
+        if (from && !inputs.crop.value) {
+          const cs = contentsOf(from.id).filter((c) => Number(c.bushels) > 0.005 && CROP_OPTS.some((o) => o.value === normCrop(c.crop)));
+          const top = cs.sort((a, b) => Number(b.bushels) - Number(a.bushels))[0];
+          const guess = from.crop && CROP_OPTS.some((o) => o.value === normCrop(from.crop)) ? normCrop(from.crop) : top ? normCrop(top.crop) : "";
+          if (guess) inputs.crop.value = guess;
+        }
+        refresh();
+      });
+      inputs.weight_lb.addEventListener("input", () => {
+        const lb = bulkNum(inputs.weight_lb.value);
+        const per = TRANSFER_STD_LB[inputs.crop.value];
+        if (lb != null && per) inputs.bushels.value = String(Math.round((lb / per) * 100) / 100);
+        refresh();
+      });
+      inputs.crop.addEventListener("change", () => { const lb = bulkNum(inputs.weight_lb.value); const per = TRANSFER_STD_LB[inputs.crop.value]; if (lb != null && per) inputs.bushels.value = String(Math.round((lb / per) * 100) / 100); refresh(); });
+      inputs.bushels.addEventListener("input", () => { inputs.weight_lb.value = ""; refresh(); });
+      ["to_bin_id"].forEach((k) => inputs[k].addEventListener("change", refresh));
+
+      const msg = mk("div", { "data-role": "transfer-message" });
+      m.box.appendChild(msg);
+      const say = (text, kind) => { msg.className = kind === "error" ? "modal-error" : "modal-note"; msg.textContent = text; };
+      const actions = mk("div", { className: "modal-actions" });
+      const cancel = mk("button", { className: "small-btn", text: "Cancel", "data-role": "transfer-cancel" });
+      cancel.addEventListener("click", m.close);
+      const save = mk("button", { className: "small-btn gold", text: "Save transfer", "data-role": "transfer-save" });
+      actions.appendChild(cancel); actions.appendChild(save); m.box.appendChild(actions);
+      save.addEventListener("click", async () => {
+        say("");
+        const r = collectSection(sx);
+        const errs = [...r.errors];
+        const { v, from, to } = read();
+        if (!errs.length) {
+          if (!(v.bushels > 0)) errs.push("Enter the bushels (or the pounds) moved.");
+          if (v.from_bin_id && v.from_bin_id === v.to_bin_id) errs.push("Choose two different bins.");
+        }
+        if (errs.length) return say(errs.join("\n"), "error");
+        const warns = refresh();
+        if (warns.length && !window.confirm(warns.join("\n\n") + "\n\nSave this transfer anyway?")) return;
+        save.disabled = true;
+        const { error } = await supabase.rpc("owner_create_transfer", { p_transfer: {
+          client_id: crypto.randomUUID(), transferred_at: v.transferred_at, from_bin_id: v.from_bin_id, to_bin_id: v.to_bin_id, crop: v.crop,
+          bushels: v.bushels, weight_lb: v.weight_lb, moisture_pct: v.moisture_pct, notes: v.notes,
+        } });
+        if (error) {
+          save.disabled = false;
+          if (/Two-step sign-in required/i.test(error.message)) { say("NOT saved — your sign-in hasn't confirmed its authenticator code. Confirm it, then press Save again.", "error"); ensureEditSession(); }
+          else if (/could not find the function|PGRST202/i.test(error.message) || error.code === "PGRST202") say("NOT saved — transfers aren't set up yet. Run add-bin-transfers.sql in the Supabase SQL Editor, then reload this page.", "error");
+          else say("NOT saved — " + error.message, "error");
+          return;
+        }
+        m.close();
+        await renderDashboard();
+        statusLine.textContent = `Saved ✓ — ${fmt(v.bushels)} bu moved from ${from.name} to ${to.name}`;
+      });
+      refresh();
+      return m;
+    }
+    async function deleteTransfer(t, nameById) {
+      if (!(await ensureEditSession())) return;
+      const nm = (id) => (nameById && nameById.get(id)) || id;
+      const ok = await confirmDelete({
+        title: "Delete this bin-to-bin transfer?",
+        lines: [`${t.transferred_at ? new Date(t.transferred_at).toLocaleString() : "Unknown time"} — ${nm(t.from_bin_id)} → ${nm(t.to_bin_id)}`, `${Number(t.bushels).toLocaleString(undefined, { maximumFractionDigits: 2 })} bu of ${t.crop}`, "The bushels go back into the first bin and come out of the second, and the crop/field record goes back with them."],
+      });
+      if (!ok) return;
+      await performDelete("owner_delete_transfer", { p_client_id: t.client_id }, async () => { await renderDashboard(); });
+    }
     async function editHaul(h) {
       if (!(await ensureEditSession())) return;
       const L = await getEditLookups();
@@ -3300,7 +3464,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const text = /Two-step sign-in required/i.test(error.message)
           ? "Your sign-in hasn't confirmed its authenticator code. Confirm it, then try again."
           : /could not find the function|PGRST202|schema cache/i.test(error.message) || error.code === "PGRST202"
-          ? `Deleting isn't set up yet. Run ${rpc === "owner_delete_affidavit" ? "allow-owner-delete-affidavits.sql" : "allow-owner-deletes.sql"} in the Supabase SQL Editor, then reload this page.`
+          ? `Deleting isn't set up yet. Run ${rpc === "owner_delete_affidavit" ? "allow-owner-delete-affidavits.sql" : rpc === "owner_delete_transfer" ? "add-bin-transfers.sql" : "allow-owner-deletes.sql"} in the Supabase SQL Editor, then reload this page.`
           : error.message;
         showNotice("Nothing was deleted", text, "delete-error");
         if (/authenticator code/.test(text)) ensureEditSession();
@@ -5379,6 +5543,8 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const { data: binRows, error: binErr } = await supabase.from("bin_levels").select("*");
       // What was loaded into each bin: crop + source field (bin_contents view, add-bin-contents.sql)
       const { data: contentRows, error: contentErr } = await supabase.from("bin_contents").select("*");
+      // Recent bin-to-bin transfers (add-bin-transfers.sql)
+      const { data: transferRows, error: transferErr } = await supabase.from("bin_transfers").select("*").order("transferred_at", { ascending: false }).limit(25);
       const contentsByBin = new Map();
       (contentRows || []).forEach((r) => { if (!contentsByBin.has(r.bin_id)) contentsByBin.set(r.bin_id, []); contentsByBin.get(r.bin_id).push(r); });
       const binNameById = new Map((binRows || []).map((b) => [b.id, b.name]));
@@ -5422,7 +5588,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           const notOrganic = b.status === "organic" && loaded.some((p) => p.field_status && p.field_status !== "organic");
           const loadedCell = loaded.length === 0
             ? "—"
-            : loaded.slice(0, 4).map((p) => `<div data-role="bin-content-line" title="${escapeHtml(`${p.loads} load${p.loads === 1 ? "" : "s"}, last ${p.last_load_at ? new Date(p.last_load_at).toLocaleDateString() : "?"}`)}">${escapeHtml(p.crop || "crop not recorded")} — ${escapeHtml(p.field_name || "field not recorded")} <span class="meta">(${Math.round(Number(p.bushels) || 0).toLocaleString()} bu${p.field_status ? ` · ${escapeHtml(p.field_status)}` : ""})</span></div>`).join("") +
+            : loaded.slice(0, 4).map((p) => `<div data-role="bin-content-line" title="${escapeHtml(p.loads === 0 ? "Arrived by bin-to-bin transfer" : `${p.loads} load${p.loads === 1 ? "" : "s"}, last ${p.last_load_at ? new Date(p.last_load_at).toLocaleDateString() : "?"}`)}">${escapeHtml(p.crop || "crop not recorded")} — ${escapeHtml(p.field_name || "field not recorded")} <span class="meta">(${Math.round(Number(p.bushels) || 0).toLocaleString()} bu${p.field_status ? ` · ${escapeHtml(p.field_status)}` : ""}${Number(p.transferred_bu) > 0.005 ? ` · ${Math.round(Number(p.transferred_bu)).toLocaleString()} bu moved in` : Number(p.transferred_bu) < -0.005 ? ` · ${Math.round(-Number(p.transferred_bu)).toLocaleString()} bu moved out` : ""})</span></div>`).join("") +
               (loaded.length > 4 ? `<div class="meta">+ ${loaded.length - 4} more</div>` : "") +
               (notOrganic ? `<div data-role="bin-not-organic" style="color:var(--danger);font-size:12px;">⚠ non-organic grain in an organic bin</div>` : "") +
               (offPlan ? `<div data-role="bin-off-plan" style="color:var(--danger);font-size:12px;">⚠ not the planned crop (${escapeHtml(b.crop)})</div>` : "");
@@ -5440,7 +5606,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             </tr>`;
         })
         .join("");
-      html += `<div class="dash-section-title" style="margin-top:24px;">Bin inventory — right now</div>`;
+      html += `<div class="dash-section-title" style="margin-top:24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">Bin inventory — right now <button class="small-btn gold" data-role="bin-transfer-btn" title="Move grain from one bin to another">Transfer bin to bin</button></div>`;
       html +=
         activeBins.length === 0
           ? `<div style="color:var(--text-muted);font-size:13px;">No bins on file.</div>`
@@ -5453,12 +5619,38 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
               <tbody>${binRowsHtml}</tbody>
             </table>`;
 
+      // ---- recent bin-to-bin transfers ----
+      if (transferErr) {
+        html += `<div data-role="bin-transfers-error" style="color:var(--text-muted);font-size:12px;margin-top:6px;">Bin-to-bin transfers aren't set up yet — run add-bin-transfers.sql in the Supabase SQL Editor (${escapeHtml(transferErr.message)})</div>`;
+      } else if ((transferRows || []).length) {
+        const nameOf = (id) => binNameById.get(id) || id;
+        html += `<div class="dash-section-title" style="margin-top:18px;">Recent bin-to-bin transfers</div>
+          <table data-role="bin-transfers-table" style="margin-bottom:8px;"><thead><tr>
+            <th style="cursor:default;">When</th><th style="cursor:default;">From</th><th style="cursor:default;">To</th><th style="cursor:default;">Crop</th><th style="cursor:default;">Bushels</th><th style="cursor:default;">Notes</th><th style="cursor:default;">Entered by</th><th style="cursor:default;"></th>
+          </tr></thead><tbody>${transferRows.map((t) => `<tr data-role="bin-transfer-row">
+            <td>${t.transferred_at ? new Date(t.transferred_at).toLocaleString() : "—"}</td>
+            <td>${escapeHtml(nameOf(t.from_bin_id))}</td><td>${escapeHtml(nameOf(t.to_bin_id))}</td>
+            <td>${escapeHtml(t.crop || "—")}</td>
+            <td>${Number(t.bushels).toLocaleString(undefined, { maximumFractionDigits: 2 })} bu${t.weight_lb != null ? ` <span class="meta">(${Number(t.weight_lb).toLocaleString()} lb)</span>` : ""}</td>
+            <td>${escapeHtml(t.notes || "")}</td>
+            <td class="meta">${escapeHtml(String(t.entered_by || "").replace(/^owner-entry:/, ""))}</td>
+            <td><button class="small-btn danger" data-delete-transfer="${escapeHtml(String(t.client_id))}">Delete</button></td>
+          </tr>`).join("")}</tbody></table>`;
+      }
       if (ctErr) html += `<div style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load contract assignments for the dollar estimate: ${escapeHtml(ctErr.message)}</div>`;
       if (psErr) html += `<div style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load partner settlement history: ${escapeHtml(psErr.message)}</div>`;
       if (binErr) html += `<div style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load bin inventory: ${escapeHtml(binErr.message)}</div>`;
       if (contentErr) html += `<div data-role="bin-contents-error" style="color:var(--danger);font-size:12px;margin-top:10px;">Could not load what was loaded into each bin — run add-bin-contents.sql in the Supabase SQL Editor (${escapeHtml(contentErr.message)})</div>`;
 
       dashContentEl.innerHTML = html;
+      const transferBtn = dashContentEl.querySelector("[data-role=bin-transfer-btn]");
+      if (transferBtn) transferBtn.addEventListener("click", () => openTransfer());
+      dashContentEl.querySelectorAll("[data-delete-transfer]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const t = (transferRows || []).find((x) => String(x.client_id) === btn.getAttribute("data-delete-transfer"));
+          if (t) deleteTransfer(t, binNameById);
+        });
+      });
       dashContentEl.querySelectorAll("[data-mark-settled]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const partnerId = Number(btn.dataset.markSettled);
