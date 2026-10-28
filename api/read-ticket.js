@@ -115,6 +115,12 @@ async function processTicketPhoto(bucket, path) {
   if (bucket !== "scale-tickets" || !path) {
     return { skipped: true, reason: "not a scale-tickets photo" };
   }
+  // The owner page's bulk "Import tickets" uploads files under bulk/ and reads
+  // them itself through api/read-tickets-bulk.js (one file can hold many
+  // tickets). They have no haul/ticket ids in the path, so skip them here.
+  if (path.startsWith("bulk/")) {
+    return { skipped: true, reason: "bulk import file — read by read-tickets-bulk" };
+  }
 
   // The upload path is <shipmentClientId>/<ticketClientId>.jpg (see
   // db.js's queueTicket) — both ids come straight from the path, no

@@ -195,6 +195,7 @@
       </select>
       <button id="hauls-csv-btn" style="display:none;">Download CSV</button>
       <button id="loads-add-btn" title="Enter a field-to-bin load by hand — for a load that was hauled but never logged on the kiosk">+ Add load</button>
+      <button id="import-tickets-btn" title="Import many own-scale tickets at once: choose several photos or PDFs (a PDF can hold many tickets), check the preview, then save">Import tickets</button>
       <button id="hauls-scan-btn" style="display:none;" title="Enter a haul and its scale ticket by taking or choosing a photo of the ticket">Scan a ticket</button>
       <label id="hauls-diff-wrap" style="display:none;align-items:center;gap:6px;font-size:13px;cursor:pointer;" title="Only the tickets where the driver's bushels and the AI's reading aren't the same — the ones that make the two totals disagree"><input type="checkbox" id="hauls-diff-only" /> Differences only</label>
       <button id="view-dashboard-btn" class="view-btn">Dashboard</button>
@@ -397,6 +398,7 @@
     const haulsCsvBtnEl = document.getElementById("hauls-csv-btn");
     const haulsScanBtnEl = document.getElementById("hauls-scan-btn");
     const loadsAddBtnEl = document.getElementById("loads-add-btn");
+    const importTicketsBtnEl = document.getElementById("import-tickets-btn");
     const haulsDiffWrapEl = document.getElementById("hauls-diff-wrap");
     const haulsDiffOnlyEl = document.getElementById("hauls-diff-only");
     const refreshBtn = document.getElementById("refresh-btn");
@@ -834,6 +836,7 @@
       haulsCsvBtnEl.style.display = mode === "hauls" ? "" : "none";
       haulsScanBtnEl.style.display = mode === "hauls" ? "" : "none";
       loadsAddBtnEl.style.display = mode === "loads" ? "" : "none";
+      importTicketsBtnEl.style.display = mode === "loads" || mode === "hauls" ? "" : "none";
       haulsDiffWrapEl.style.display = mode === "hauls" ? "flex" : "none";
 
       if (mode === "hauls" && !haulsLoaded) await fetchHauls();
@@ -957,7 +960,8 @@
         moisture_raw: l.moisture_pct,
         test_weight_raw: l.test_weight,
         crop_raw: l.crop || l.fields?.crop || null,
-        by_hand: typeof l.device_id === "string" && l.device_id.startsWith("owner-entry:") ? "Entered on the owner page by " + l.device_id.slice(12) : "",
+        by_hand: typeof l.device_id === "string" && l.device_id.startsWith("owner-entry:") ? (String(l.photo_path || "").startsWith("bulk/") ? "Imported from a ticket file by " : "Entered on the owner page by ") + l.device_id.slice(12) + (l.ticket_number ? " — ticket " + l.ticket_number : "") : "",
+        imported: String(l.photo_path || "").startsWith("bulk/"),
         raw: l, // the database row itself, for the editor
       }));
       statusLine.textContent = `${allLoads.length} load${allLoads.length === 1 ? "" : "s"}`;
@@ -1014,7 +1018,7 @@
           ? `<span class="badge badge-${r.status}">${r.status[0].toUpperCase()}${r.status.slice(1)}</span>`
           : "—";
         tr.innerHTML = `
-          <td>${time}${r.by_hand ? ` <span class="meta" data-role="by-hand-tag" title="${escapeHtml(r.by_hand)}">entered by hand</span>` : ""}</td>
+          <td>${time}${r.by_hand ? ` <span class="meta" data-role="by-hand-tag" title="${escapeHtml(r.by_hand)}">${r.imported ? "imported from ticket" : "entered by hand"}</span>` : ""}</td>
           <td>${escapeHtml(r.worker)}</td>
           <td>${escapeHtml(r.field)}</td>
           <td>${escapeHtml(r.crop)}</td>
@@ -1136,7 +1140,8 @@
         const destLoc = (s.destination_location || s.destinations?.location || "").split(",")[0].trim();
 
         let checkStatus = "none", checkLabel = "No ticket yet";
-        if (ticket && !read) { checkStatus = "review"; checkLabel = "Waiting on AI read"; }
+        if (ticket && !read && String(ticket.photo_path || "").startsWith("bulk/")) { checkStatus = "reviewed"; checkLabel = "Imported (checked at import)"; }
+        else if (ticket && !read) { checkStatus = "review"; checkLabel = "Waiting on AI read"; }
         else if (ticket && read?.error) { checkStatus = "review"; checkLabel = "AI read failed"; }
         else if (ticket && read) {
           const netClose = read.net_lb == null || ticket.net_lb == null || Math.abs(read.net_lb - ticket.net_lb) <= Math.max(50, ticket.net_lb * 0.01);
@@ -3782,6 +3787,403 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       return m;
     }
     haulsScanBtnEl.addEventListener("click", openScanEntry);
+
+    // =====================================================================
+    // Import tickets (bulk). Own-scale tickets as many photos and/or PDFs
+    // (a PDF may hold many tickets). Each file is uploaded to the
+    // scale-tickets bucket under bulk/, read by /api/read-tickets-bulk, and
+    // shown as a preview table. Nothing is saved until the owner confirms;
+    // rows save one at a time through owner_create_load (field-to-bin,
+    // allow-owner-add-loads.sql + allow-owner-import-tickets.sql) or
+    // owner_create_haul (hauls, allow-owner-scan-entry.sql).
+    // =====================================================================
+    const BULK_MAX_FILES = 40;
+    const STD_LB_PER_BU = { Corn: 56, Soybeans: 60, Oats: 32 };
+    const round2 = (n) => Math.round(n * 100) / 100;
+    async function callBulkRead(path) {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      if (!token) throw new Error("Not logged in");
+      const res = await fetch("/api/read-tickets-bulk", {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ path }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error || `Request failed (${res.status})`);
+      return result;
+    }
+    const bulkNum = (v) => (v === "" || v == null || !Number.isFinite(Number(v)) ? null : Number(v));
+
+    async function openBulkImport(mode) {
+      if (!(await ensureEditSession())) return;
+      const isLoads = mode === "loads";
+      await Promise.all([isLoads ? ensureLoads() : ensureHauls(), ensureDestinations()]);
+      const [L, bRes, fRes] = await Promise.all([
+        getEditLookups(),
+        supabase.from("bins").select("id, name, status, crop, bin_type"),
+        supabase.from("fields").select("id, name, crop, status"),
+      ]);
+      const binRows = bRes.data || [], fieldRows = fRes.data || [];
+      const normCrop = (c) => (c === "Beans" ? "Soybeans" : c);
+      const m = openModal(isLoads ? "Import field-to-bin tickets" : "Import haul tickets");
+      m.box.setAttribute("data-role", "bulk-modal");
+      m.box.style.maxWidth = "min(1500px, 100%)";
+      const stage = mk("div", { "data-role": "bulk-stage" });
+      m.box.appendChild(stage);
+      let closed = false;
+      const close = () => { closed = true; m.close(); };
+      const clear = () => { stage.innerHTML = ""; };
+      const button = (text, role, cls, onClick) => { const b = mk("button", { className: "small-btn" + (cls ? " " + cls : ""), text, "data-role": role }); b.addEventListener("click", onClick); return b; };
+      const actionRow = (...btns) => { const row = mk("div", { className: "modal-actions" }); btns.forEach((b) => row.appendChild(b)); stage.appendChild(row); return row; };
+      const batchId = crypto.randomUUID();
+      let rows = [];      // the preview rows
+      let nextId = 1;
+
+      // ---------------- step 1: choose files ----------------
+      function stepPick(problem) {
+        clear();
+        stage.appendChild(mk("div", { style: "font-size:13px;line-height:1.5;", text: isLoads
+          ? "Choose the scale tickets for these field-to-bin loads: several photos and/or PDFs at once (a PDF can hold many tickets). The AI reads every ticket; you then pick the field, bin and worker for each one and check the numbers before anything is saved."
+          : "Choose the scale tickets for these hauls: several photos and/or PDFs at once (a PDF can hold many tickets). The AI reads every ticket; you then pick the truck, where it came from and the buyer, and check the numbers before anything is saved." }));
+        if (problem) stage.appendChild(mk("div", { className: "modal-error", "data-role": "bulk-error", text: problem }));
+        const inp = mk("input", { type: "file", accept: "image/*,application/pdf,.pdf", multiple: "multiple", style: "display:none;", "data-role": "bulk-file-input" });
+        inp.addEventListener("change", () => { const fs = [...(inp.files || [])]; if (fs.length) handleFiles(fs); });
+        stage.appendChild(inp);
+        actionRow(button("Cancel", "bulk-cancel", "", close), button("Choose files", "bulk-choose", "gold", () => inp.click()));
+      }
+
+      // ---------------- step 2: upload + read ----------------
+      async function handleFiles(files) {
+        clear();
+        if (files.length > BULK_MAX_FILES) return stepPick(`That is ${files.length} files — choose ${BULK_MAX_FILES} or fewer at a time.`);
+        stage.appendChild(mk("div", { style: "font-size:13px;margin-bottom:8px;", text: "Reading the tickets… each file takes about 10 to 40 seconds." }));
+        const list = mk("div", { "data-role": "bulk-progress", style: "display:flex;flex-direction:column;gap:4px;font-size:13px;" });
+        stage.appendChild(list);
+        const items = files.map((f, i) => {
+          const line = mk("div", { "data-role": "bulk-file-line" });
+          list.appendChild(line);
+          const it = { file: f, i, line, tickets: 0, failed: null };
+          const set = (txt, bad) => { line.textContent = `${f.name || "file " + (i + 1)} — ${txt}`; line.style.color = bad ? "var(--danger)" : ""; };
+          it.set = set; set("waiting");
+          return it;
+        });
+        const done = button("Continue", "bulk-continue", "gold", () => stepPreview());
+        done.disabled = true;
+        const cancel = button("Cancel", "bulk-cancel", "", close);
+        actionRow(cancel, done);
+        const worker = async (it) => {
+          if (closed) return;
+          const f = it.file, isPdf = isPdfFile(f);
+          try {
+            let prepared;
+            it.set(isPdf ? "checking the PDF…" : "preparing the photo…");
+            if (isPdf) {
+              if (f.size > SCAN_PDF_MAX_BYTES) throw new Error("over 10 MB — scan at a lower quality or split it");
+              if (!(await looksLikePdf(f))) throw new Error("doesn't look like a PDF");
+              prepared = { blob: new Blob([f], { type: "application/pdf" }), type: "application/pdf" };
+            } else {
+              prepared = await prepareTicketPhoto(f);
+              if (!SCAN_TYPES.includes(prepared.type)) throw new Error("not a JPEG, PNG or WebP photo (or a PDF)");
+              if (prepared.blob.size > SCAN_MAX_BYTES) throw new Error("over 5 MB even after shrinking — take a closer photo");
+            }
+            if (closed) return;
+            const path = `bulk/${batchId}/${it.i}.${SCAN_EXT[prepared.type]}`;
+            it.set("uploading…");
+            const up = await supabase.storage.from("scale-tickets").upload(path, prepared.blob, { contentType: prepared.type, upsert: false });
+            if (up.error) throw new Error(/mime|not supported|unsupported/i.test(up.error.message) ? "storage doesn't accept PDFs yet (run allow-pdf-ticket-upload.sql)" : /row-level security|policy|not authorized|403/i.test(up.error.message) ? "upload refused (confirm your authenticator code; run allow-owner-scan-entry.sql if you haven't)" : up.error.message);
+            if (closed) return;
+            it.set("reading…");
+            const res = await callBulkRead(path);
+            if (closed) return;
+            const ts = res.tickets || [];
+            it.tickets = ts.length;
+            ts.forEach((t, n) => { const row = makeRow(t, path, f.name || path, isPdf, n); row.order = it.i * 1000 + n; rows.push(row); });
+            it.set(ts.length === 0 ? "no ticket found in this file" : `${ts.length} ticket${ts.length === 1 ? "" : "s"} read`, ts.length === 0);
+          } catch (e) {
+            it.failed = e.message || String(e);
+            it.set("NOT read: " + it.failed, true);
+          }
+        };
+        const queue = [...items];
+        await Promise.all([0, 1].map(async () => { while (queue.length && !closed) await worker(queue.shift()); }));
+        if (closed) return;
+        rows.sort((a, b) => a.order - b.order);   // files finish in any order; show them in the order chosen
+        done.disabled = false;
+        done.textContent = rows.length ? `Continue — ${rows.length} ticket${rows.length === 1 ? "" : "s"}` : "Choose other files";
+        if (!rows.length) done.onclick = () => stepPick("No tickets could be read from those files.");
+      }
+
+      // ---------------- the preview rows ----------------
+      function makeRow(t, path, fileName, isPdf, n) {
+        const crop = cropFromCommodity(t.commodity);
+        const gross = bulkNum(t.gross_lb), tare = bulkNum(t.tare_lb);
+        let net = bulkNum(t.net_lb);
+        if (net == null && gross != null && tare != null) net = gross - tare;
+        const r = {
+          id: nextId++, path, fileName, isPdf, page: t.page || null, include: true,
+          ticket_number: t.ticket_number || "", logged_at: parseTicketDateTime(t.ticket_date, t.ticket_time),
+          crop: crop || "", gross_lb: gross, tare_lb: tare, net_lb: net, net_bu: bulkNum(t.net_bu),
+          moisture_pct: bulkNum(t.moisture_pct), test_weight: bulkNum(t.test_weight),
+          notes: t.handwritten_notes || "", vehicle: t.vehicle_id_printed || "", read_issues: t.legibility_issues || [],
+          worker_id: "", field_id: "", bin_id: "", origin: "", truck: "", trailer: "", destination_id: "",
+          buyer_text: t.buyer_name || "", buyer_location: t.buyer_location || "",
+          date_text: t.ticket_date || "", saved: false, error: "",
+        };
+        if (!isLoads && (t.buyer_name)) r.destination_id = matchDestinationId(t.buyer_name, t.buyer_location) || "";
+        return r;
+      }
+      const dupSet = () => {
+        const set = new Set();
+        if (isLoads) allLoads.forEach((l) => { if (l.raw && l.raw.ticket_number) set.add(normalizeTicketNumber(l.raw.ticket_number)); });
+        else allHauls.forEach((h) => { if (h.ticketNumber && h.ticketNumber !== "—") set.add(normalizeTicketNumber(h.ticketNumber)); });
+        return set;
+      };
+      // everything worth telling the owner about one row
+      function check(r, dups, seen) {
+        const errors = [], warns = [];
+        if (!r.logged_at) errors.push("date");
+        if (!r.crop) errors.push("crop");
+        if (!(r.net_lb > 0)) errors.push("net weight");
+        if (isLoads) {
+          if (!r.worker_id) errors.push("worker");
+          if (!r.field_id) errors.push("field");
+          if (!r.bin_id) errors.push("bin");
+        } else {
+          if (!r.ticket_number.trim()) errors.push("ticket #");
+          if (!r.worker_id) errors.push("driver");
+          if (!r.truck) errors.push("truck");
+          if (!r.trailer) errors.push("trailer");
+          if (!r.origin) errors.push("comes from");
+        }
+        if (r.gross_lb != null && r.tare_lb != null && r.net_lb != null && Math.abs(r.gross_lb - r.tare_lb - r.net_lb) > 1) warns.push(`gross − tare is ${(r.gross_lb - r.tare_lb).toLocaleString()} but net is ${r.net_lb.toLocaleString()}`);
+        const key = r.ticket_number.trim() ? normalizeTicketNumber(r.ticket_number) : "";
+        if (key && dups.has(key)) warns.push("ticket # already on file");
+        if (key && seen.get(key) > 1) warns.push("ticket # appears more than once in this import");
+        if (isLoads && !r.ticket_number.trim()) warns.push("no ticket #");
+        if (r.read_issues.length) warns.push("hard to read: " + r.read_issues.join("; "));
+        if (isLoads && r.bin_id && r.field_id) {
+          const bin = binRows.find((b) => b.id === r.bin_id), field = fieldRows.find((f) => f.id === r.field_id);
+          if (bin && field && bin.bin_type !== "wet") {
+            if (bin.status === "organic" && field.status !== "organic") warns.push(`${bin.name} is an ORGANIC bin, this is ${field.status} grain`);
+            if (field.status === "organic" && bin.status !== "organic") warns.push(`ORGANIC grain into non-organic ${bin.name}`);
+            if (bin.crop && r.crop && normCrop(bin.crop) !== r.crop) warns.push(`${bin.name} is planned for ${normCrop(bin.crop)}`);
+          }
+        }
+        return { errors, warns, dupFlag: !!(key && dups.has(key)) };
+      }
+
+      // ---------------- step 3: the preview table ----------------
+      function stepPreview() {
+        clear();
+        const dups = dupSet();
+        // rows that match something already on file start unticked
+        rows.forEach((r) => { const k = r.ticket_number.trim() ? normalizeTicketNumber(r.ticket_number) : ""; if (k && dups.has(k) && r._dupSeen !== true) { r.include = false; r._dupSeen = true; } });
+        stage.appendChild(mk("div", { style: "font-size:13px;line-height:1.5;margin-bottom:8px;", text: isLoads
+          ? "Check each ticket against the file. Fill in the field, bin and worker (use “Set all rows” for the ones that are the same). Rows with something missing can't be saved; a ⚠ is a warning you can accept. Nothing is saved until you press Save."
+          : "Check each ticket against the file. Fill in the driver, truck, trailer, where it came from and the buyer (use “Set all rows” for the ones that are the same). Rows with something missing can't be saved; a ⚠ is a warning you can accept. Nothing is saved until you press Save." }));
+
+        // ---- set-all bar ----
+        const bar = mk("div", { "data-role": "bulk-setall", style: "display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:10px;padding:8px;border:1px solid var(--border);border-radius:8px;" });
+        bar.appendChild(mk("span", { style: "font-size:12px;color:var(--text-muted);align-self:center;", text: "Set all rows:" }));
+        const optsEl = (sel, list, blank) => { sel.appendChild(Object.assign(document.createElement("option"), { value: "", textContent: blank })); list.forEach((o) => sel.appendChild(Object.assign(document.createElement("option"), { value: String(o.value), textContent: o.label }))); return sel; };
+        const cropList = CROP_OPTS;
+        const originList = [...L.bins.map((b) => opt("bin:" + b.value, "Bin: " + b.label)), ...L.fields.map((f) => opt("field:" + f.value, "Field: " + f.label))];
+        const truckList = [...TRUCK_OPTS, opt("External", "External truck")];
+        const trailerList = [...TRAILER_OPTS, opt("External", "External trailer")];
+        const setAllDefs = isLoads
+          ? [["worker_id", "Worker", L.workers], ["field_id", "Field", L.fields], ["bin_id", "Bin", L.bins], ["crop", "Crop", cropList]]
+          : [["worker_id", "Driver", L.workers], ["truck", "Truck", truckList], ["trailer", "Trailer", trailerList], ["origin", "Comes from", originList], ["destination_id", "Buyer", destinationOpts()], ["crop", "Crop", cropList]];
+        setAllDefs.forEach(([key, label, list]) => {
+          const wrap = mk("label", { style: "display:flex;flex-direction:column;gap:2px;font-size:11px;color:var(--text-muted);" });
+          wrap.appendChild(mk("span", { text: label }));
+          const sel = optsEl(mk("select", { "data-role": "bulk-setall-" + key }), list, "—");
+          sel.addEventListener("change", () => { if (!sel.value) return; rows.filter((r) => !r.saved).forEach((r) => { r[key] = sel.value; }); sel.value = ""; renderTable(); });
+          wrap.appendChild(sel); bar.appendChild(wrap);
+        });
+        stage.appendChild(bar);
+
+        const summary = mk("div", { "data-role": "bulk-summary", style: "font-size:13px;margin:6px 0;" });
+        stage.appendChild(summary);
+        const wrap = mk("div", { style: "overflow:auto;max-height:60vh;border:1px solid var(--border);border-radius:8px;" });
+        const table = mk("table", { "data-role": "bulk-table", style: "width:100%;font-size:12px;" });
+        wrap.appendChild(table); stage.appendChild(wrap);
+        const msg = mk("div", { "data-role": "bulk-message" });
+        stage.appendChild(msg);
+        const say = (text, kind) => { msg.className = kind === "error" ? "modal-error" : "modal-note"; msg.textContent = text; msg.style.whiteSpace = "pre-line"; };
+        const saveBtn = button("Save", "bulk-save", "gold", () => saveAll());
+        const backBtn = button("Choose more files", "bulk-more", "", () => stepPick());
+        actionRow(button("Close", "bulk-close", "", close), backBtn, saveBtn);
+
+        const heads = isLoads
+          ? ["", "Ticket #", "Date & time", "Crop", "Gross lb", "Tare lb", "Net lb", "Moist %", "Test wt", "Field", "Bin", "Worker", "Notes on ticket", "Status"]
+          : ["", "Ticket #", "Date & time", "Crop", "Gross lb", "Tare lb", "Net lb", "Moist %", "Test wt", "Driver", "Truck", "Trailer", "Comes from", "Buyer", "Notes on ticket", "Status"];
+        const input = (r, key, type, w, props = {}) => {
+          const el = mk("input", { type, "data-bulk": key, style: `width:${w};font-size:12px;`, ...props });
+          el.value = type === "datetime-local" ? toLocalInput(r[key]) : r[key] == null ? "" : String(r[key]);
+          el.addEventListener("input", () => {
+            if (type === "number") r[key] = bulkNum(el.value);
+            else if (type === "datetime-local") r[key] = el.value ? new Date(el.value).toISOString() : null;
+            else r[key] = el.value;
+            if (key === "gross_lb" || key === "tare_lb") {
+              if (r.gross_lb != null && r.tare_lb != null && r.net_lb == null) {
+                r.net_lb = r.gross_lb - r.tare_lb;
+                const nEl = el.closest("tr") && el.closest("tr").querySelector("[data-bulk=net_lb]");
+                if (nEl) nEl.value = String(r.net_lb);
+              }
+            }
+            softRefresh();
+          });
+          return el;
+        };
+        const select = (r, key, list, w, blank = "—") => {
+          const sel = optsEl(mk("select", { "data-bulk": key, style: `width:${w};font-size:12px;` }), list, blank);
+          sel.value = r[key] || "";
+          sel.addEventListener("change", () => {
+            r[key] = sel.value;
+            if (isLoads && key === "field_id" && !r.crop) { const f = fieldRows.find((x) => x.id === r.field_id); if (f && f.crop && CROP_OPTS.some((o) => o.value === normCrop(f.crop))) { r.crop = normCrop(f.crop); renderTable(); return; } }
+            softRefresh();
+          });
+          return sel;
+        };
+        let softTimer = null;
+        const statusCells = new Map();
+        function softRefresh() {   // update statuses/summary only, so typing doesn't lose focus
+          const dupsNow = dupSet(); const seen = new Map();
+          rows.forEach((r) => { const k = r.ticket_number.trim() ? normalizeTicketNumber(r.ticket_number) : ""; if (k) seen.set(k, (seen.get(k) || 0) + 1); });
+          let ready = 0, blocked = 0;
+          rows.forEach((r) => {
+            const c = r.saved ? { errors: [], warns: [] } : check(r, dupsNow, seen);
+            r._check = c;
+            const cell = statusCells.get(r.id);
+            if (cell) {
+              cell.innerHTML = "";
+              if (r.saved) cell.appendChild(mk("span", { style: "color:var(--ok,#2e7d32);", text: "Saved ✓" }));
+              else if (r.error) cell.appendChild(mk("span", { style: "color:var(--danger);", text: "NOT saved: " + r.error }));
+              else if (c.errors.length) cell.appendChild(mk("span", { style: "color:var(--danger);", "data-role": "bulk-row-errors", text: "Needs: " + c.errors.join(", ") }));
+              else cell.appendChild(mk("span", { "data-role": "bulk-row-ready", style: "color:var(--ok,#2e7d32);", text: "Ready" }));
+              if (!r.saved && c.warns.length) cell.appendChild(mk("div", { "data-role": "bulk-row-warns", style: "color:var(--warn,#b26a00);", text: c.warns.map((w) => "⚠ " + w).join("\n") }));
+            }
+            if (!r.saved && r.include) { if (c.errors.length) blocked++; else ready++; }
+          });
+          const sel = rows.filter((r) => !r.saved && r.include).length, saved = rows.filter((r) => r.saved).length;
+          summary.textContent = `${rows.length} ticket${rows.length === 1 ? "" : "s"} read · ${sel} ticked · ${ready} ready${blocked ? ` · ${blocked} ticked but missing something` : ""}${saved ? ` · ${saved} saved` : ""}`;
+          saveBtn.textContent = ready ? `Save ${ready} ticket${ready === 1 ? "" : "s"}` : "Save";
+          saveBtn.disabled = ready === 0;
+        }
+        function renderTable() {
+          table.innerHTML = ""; statusCells.clear();
+          const thead = mk("thead"); const hr = mk("tr");
+          heads.forEach((h, i) => {
+            const th = mk("th", { style: "position:sticky;top:0;background:var(--panel);text-align:left;padding:4px 6px;white-space:nowrap;" });
+            if (i === 0) {
+              const all = mk("input", { type: "checkbox", "data-role": "bulk-select-all", title: "Tick or untick every row" });
+              all.checked = rows.filter((r) => !r.saved).every((r) => r.include);
+              all.addEventListener("change", () => { rows.filter((r) => !r.saved).forEach((r) => { r.include = all.checked; }); renderTable(); });
+              th.appendChild(all);
+            } else th.textContent = h;
+            hr.appendChild(th);
+          });
+          thead.appendChild(hr); table.appendChild(thead);
+          const tb = mk("tbody"); table.appendChild(tb);
+          rows.forEach((r) => {
+            const tr = mk("tr", { "data-role": "bulk-row", "data-row": String(r.id), style: "vertical-align:top;" + (r.saved ? "opacity:.55;" : "") });
+            const td = (...kids) => { const c = mk("td", { style: "padding:3px 4px;" }); kids.forEach((k) => c.appendChild(k)); tr.appendChild(c); return c; };
+            const cb = mk("input", { type: "checkbox", "data-bulk": "include" }); cb.checked = r.include && !r.saved; cb.disabled = r.saved;
+            cb.addEventListener("change", () => { r.include = cb.checked; softRefresh(); });
+            td(cb);
+            const tcell = td(input(r, "ticket_number", "text", "92px"));
+            tcell.appendChild(mk("div", { className: "meta", style: "max-width:92px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;", title: r.fileName, text: r.fileName + (r.page ? ` p.${r.page}` : "") }));
+            td(input(r, "logged_at", "datetime-local", "150px"));
+            td(select(r, "crop", cropList, "78px"));
+            td(input(r, "gross_lb", "number", "72px", { step: "any" }));
+            td(input(r, "tare_lb", "number", "72px", { step: "any" }));
+            td(input(r, "net_lb", "number", "72px", { step: "any" }));
+            td(input(r, "moisture_pct", "number", "54px", { step: "any" }));
+            td(input(r, "test_weight", "number", "54px", { step: "any" }));
+            if (isLoads) {
+              td(select(r, "field_id", L.fields, "120px"));
+              td(select(r, "bin_id", L.bins, "90px"));
+              td(select(r, "worker_id", L.workers, "90px"));
+            } else {
+              td(select(r, "worker_id", L.workers, "90px"));
+              td(select(r, "truck", truckList, "82px"));
+              td(select(r, "trailer", trailerList, "82px"));
+              td(select(r, "origin", originList, "120px"));
+              const bsel = select(r, "destination_id", destinationOpts(), "130px");
+              const bc = td(bsel);
+              if (r.buyer_text && !r.destination_id) bc.appendChild(mk("div", { className: "meta", "data-role": "bulk-buyer-text", style: "max-width:130px;", text: `On ticket: ${r.buyer_text}${r.buyer_location ? ", " + r.buyer_location : ""}` }));
+            }
+            td(mk("div", { className: "meta", "data-role": "bulk-notes", style: "max-width:150px;white-space:pre-wrap;", text: [r.notes, r.vehicle ? `Vehicle: ${r.vehicle}` : ""].filter(Boolean).join("\n") || "—" }));
+            const sc = td(); statusCells.set(r.id, sc); sc.style.minWidth = "160px";
+            tb.appendChild(tr);
+          });
+          softRefresh();
+        }
+        renderTable();
+
+        // ---- saving ----
+        async function saveAll() {
+          say("");
+          const dupsNow = dupSet(); const seen = new Map();
+          rows.forEach((r) => { const k = r.ticket_number.trim() ? normalizeTicketNumber(r.ticket_number) : ""; if (k) seen.set(k, (seen.get(k) || 0) + 1); });
+          const todo = rows.filter((r) => !r.saved && r.include && check(r, dupsNow, seen).errors.length === 0);
+          if (!todo.length) return say("Nothing ready to save.", "error");
+          const warned = todo.filter((r) => check(r, dupsNow, seen).warns.length);
+          if (warned.length && !window.confirm(`${warned.length} of the ${todo.length} tickets have a ⚠ warning (shown in the Status column). Save all ${todo.length} anyway?`)) return;
+          saveBtn.disabled = true; backBtn.disabled = true;
+          const { data: sess } = await supabase.auth.getSession();
+          const email = sess?.session?.user?.email || "unknown";
+          let okN = 0, stopped = false;
+          for (const r of todo) {
+            r.error = "";
+            let error;
+            if (isLoads) {
+              const bushels = r.net_bu != null ? r.net_bu : round2(r.net_lb / (STD_LB_PER_BU[r.crop] || 56));
+              ({ error } = await supabase.rpc("owner_create_load", { p_load: {
+                client_id: crypto.randomUUID(), logged_at: r.logged_at, worker_id: r.worker_id, field_id: r.field_id, bin_id: r.bin_id, crop: r.crop,
+                truck: null, truck_mode: "full", bushels, weight_lb: r.net_lb, moisture_pct: r.moisture_pct, test_weight: r.test_weight, is_buffer: false,
+                ticket_number: r.ticket_number.trim() || null, photo_path: r.path,
+              } }));
+            } else {
+              const [otype, oid] = r.origin.split(":");
+              const src = otype === "bin" ? binRows.find((b) => b.id === oid) : fieldRows.find((f) => f.id === oid);
+              const bushels = r.net_bu != null ? r.net_bu : round2(r.net_lb / (STD_LB_PER_BU[r.crop] || 56));
+              const shipId = crypto.randomUUID(), tickId = crypto.randomUUID();
+              const typed = !r.destination_id && r.buyer_text;
+              const shipment = {
+                client_id: shipId, departed_at: r.logged_at, worker_id: r.worker_id, truck: r.truck, trailer: r.trailer, origin_type: otype,
+                bin_id: otype === "bin" ? oid : null, field_id: otype === "field" ? oid : null, crop: r.crop, origin_status: (src && src.status) || null,
+                bin_status: otype === "bin" ? (src && src.status) || null : null, destination_id: r.destination_id || null,
+                destination_name: typed ? r.buyer_text : null, destination_location: typed ? r.buyer_location || null : null,
+                est_bushels: bushels, est_weight_lb: r.net_lb, device_id: `owner-import:${email}`,
+              };
+              const ticket = {
+                client_id: tickId, shipment_client_id: shipId, created_at: new Date().toISOString(), worker_id: r.worker_id, ticket_number: r.ticket_number.trim(),
+                gross_lb: r.gross_lb, tare_lb: r.tare_lb, net_lb: r.net_lb, net_bushels: bushels, moisture_pct: r.moisture_pct, test_weight: r.test_weight,
+                photo_path: r.path, notes: r.notes || null, device_id: `owner-import:${email}`,
+              };
+              ({ error } = await supabase.rpc("owner_create_haul", { p_shipment: shipment, p_ticket: ticket }));
+            }
+            if (error) {
+              if (/Two-step sign-in required/i.test(error.message)) { r.error = "your authenticator code expired — confirm it and press Save again"; stopped = true; ensureEditSession(); break; }
+              if (/could not find the function|PGRST202/i.test(error.message) || error.code === "PGRST202") { r.error = isLoads ? "not set up — run allow-owner-add-loads.sql and allow-owner-import-tickets.sql" : "not set up — run allow-owner-scan-entry.sql"; stopped = true; break; }
+              r.error = error.message;
+              continue;
+            }
+            r.saved = true; r.include = false; okN++;
+          }
+          const failed = todo.filter((r) => r.error).length;
+          backBtn.disabled = false;
+          renderTable();
+          say(`Saved ${okN} of ${todo.length}.` + (failed ? `\n${failed} not saved — the reason is in each row's Status; fix it and press Save again.` : "") + (stopped ? "\nStopped early." : ""), failed ? "error" : "note");
+          if (okN) { if (isLoads) await fetchLoads(); else { await fetchHauls(); render(); } statusLine.textContent = `Saved ✓ — ${okN} ticket${okN === 1 ? "" : "s"} imported`; }
+        }
+      }
+      stepPick();
+      return m;
+    }
+    importTicketsBtnEl.addEventListener("click", () => openBulkImport(viewMode === "hauls" ? "hauls" : "loads"));
 
     // ---- the edit log tab ----
     let editLogRows = [];
