@@ -3200,7 +3200,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
     const TRANSFER_STD_LB = { Corn: 56, Soybeans: 60, Oats: 32 };
     // The same sharing-out the database does: each line of the source's record gives up its share,
     // never more than it holds; what the record can't account for moves as "origin not recorded".
-    function transferParts(contents, bushels, crop) {
+    function transferParts(contents, bushels, crop, status) {
       const lines = (contents || []).filter((c) => Number(c.bushels) > 0.005);
       const total = lines.reduce((n, c) => n + Number(c.bushels), 0);
       const parts = [];
@@ -3208,19 +3208,27 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       if (total > 0) {
         lines.slice().sort((a, b) => String(a.crop).localeCompare(String(b.crop)) || String(a.field_id).localeCompare(String(b.field_id))).forEach((c) => {
           const part = Math.round(Math.min(Number(c.bushels), (bushels * Number(c.bushels)) / total) * 1e4) / 1e4;
-          if (part > 0) { parts.push({ crop: c.crop, field_id: c.field_id, field_name: c.field_name, field_status: c.field_status, bushels: part }); moved += part; }
+          if (part > 0) { parts.push({ crop: c.crop, field_id: c.field_id, field_name: c.field_name, declared: c.field_status || null, field_status: c.field_status || status || null, bushels: part }); moved += part; }
         });
       }
-      if (bushels - moved > 0.005) parts.push({ crop, field_id: null, field_name: null, field_status: null, bushels: Math.round((bushels - moved) * 1e4) / 1e4 });
+      if (bushels - moved > 0.005) parts.push({ crop, field_id: null, field_name: null, declared: null, field_status: status || null, bushels: Math.round((bushels - moved) * 1e4) / 1e4 });
       return parts;
+    }
+    // The status to suggest for grain leaving a bin: what its record says if that is all one status, else the bin's own status.
+    function suggestTransferStatus(contents, bin) {
+      const sts = [...new Set((contents || []).filter((c) => Number(c.bushels) > 0.005 && c.field_status).map((c) => c.field_status))];
+      if (sts.length === 1) return sts[0];
+      return sts.length === 0 && bin && ["organic", "transitional", "conventional"].includes(bin.status) ? bin.status : "";
     }
     // What is worth a second look about moving grain from one bin to the next. `parts` is what would move
     // (transferParts), `toContents` what the receiving bin already holds. Shared by the transfer window and the ticket import.
-    function transferWarnings({ from, to, crop, bushels, parts, toContents }) {
+    function transferWarnings({ from, to, crop, bushels, parts, toContents, status }) {
       const warns = [];
       if (!from || !to || !(bushels > 0) || !crop) return warns;
       const fmtN = (n) => Math.round(Number(n) || 0).toLocaleString();
       const normC = (c) => (c === "Beans" ? "Soybeans" : c);
+      const mism = [...new Set(parts.filter((p) => p.declared && status && p.declared !== status).map((p) => p.declared))];
+      if (mism.length) warns.push(`${from.name}'s record says part of this grain is ${mism.join("/")}, but you chose ${status}. That part keeps its recorded status; ${status} applies only to grain with no recorded origin.`);
       const orgSrc = from.status === "organic" || parts.some((p) => p.field_status === "organic");
       const nonOrgSrc = parts.some((p) => p.field_status && p.field_status !== "organic");
       if (to.status === "organic" && (nonOrgSrc || (from.status && from.status !== "organic"))) warns.push(`${to.name} is an ORGANIC bin and this grain is not all organic. Non-organic grain in an organic bin can end the bin's organic status until it is cleaned out.`);
@@ -3248,6 +3256,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         { key: "from_bin_id", label: "From bin", type: "select", required: true, options: () => binOpts },
         { key: "to_bin_id", label: "To bin", type: "select", required: true, options: () => binOpts },
         { key: "crop", label: "Crop", type: "select", required: true, options: () => [opt("", "— choose —"), ...CROP_OPTS] },
+        { key: "origin_status", label: "Grain status", type: "select", required: true, options: () => [opt("", "— choose —"), ...STATUS_OPTS] },
         { key: "bushels", label: "Bushels", type: "number", min: 0 },
         { key: "weight_lb", label: "…or pounds (fills in the bushels)", type: "number", min: 0 },
         { key: "moisture_pct", label: "Moisture %", type: "number", min: 0, max: 100 },
@@ -3285,17 +3294,20 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         if (to) lines.push(`${to.name} holds ${fmt(to.bushels_in_bin)} bu${to.capacity_k_bu != null ? ` of ${fmt(to.capacity_k_bu * 1000)}` : ""}`);
         const bu = v.bushels;
         if (from && bu > 0 && v.crop) {
-          const parts = transferParts(contentsOf(from.id), bu, v.crop);
-          lines.push("This moves: " + parts.map((p) => `${p.crop || "?"} · ${p.field_name || "origin not recorded"} ${fmt(p.bushels)} bu`).join("; "));
-          warns.push(...transferWarnings({ from, to, crop: v.crop, bushels: bu, parts, toContents: to ? contentsOf(to.id) : [] }));
+          const parts = transferParts(contentsOf(from.id), bu, v.crop, v.origin_status);
+          lines.push("This moves: " + parts.map((p) => `${p.crop || "?"} · ${p.field_name || "origin not recorded"}${p.field_status ? " (" + p.field_status + ")" : ""} ${fmt(p.bushels)} bu`).join("; "));
+          warns.push(...transferWarnings({ from, to, crop: v.crop, bushels: bu, parts, toContents: to ? contentsOf(to.id) : [], status: v.origin_status }));
         }
         info.textContent = lines.join("\n");
         warnEl.textContent = warns.map((w) => "⚠ " + w).join("\n");
         return warns;
       }
       // choosing the source suggests its crop; pounds fill in the bushels
+      let statusTouched = false;
+      inputs.origin_status.addEventListener("change", () => { statusTouched = true; refresh(); });
       inputs.from_bin_id.addEventListener("change", () => {
         const { from } = read();
+        if (from && !statusTouched) inputs.origin_status.value = suggestTransferStatus(contentsOf(from.id), from);
         if (from && !inputs.crop.value) {
           const cs = contentsOf(from.id).filter((c) => Number(c.bushels) > 0.005 && CROP_OPTS.some((o) => o.value === normCrop(c.crop)));
           const top = cs.sort((a, b) => Number(b.bushels) - Number(a.bushels))[0];
@@ -3337,7 +3349,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         save.disabled = true;
         const { error } = await supabase.rpc("owner_create_transfer", { p_transfer: {
           client_id: crypto.randomUUID(), transferred_at: v.transferred_at, from_bin_id: v.from_bin_id, to_bin_id: v.to_bin_id, crop: v.crop,
-          bushels: v.bushels, weight_lb: v.weight_lb, moisture_pct: v.moisture_pct, ticket_number: v.ticket_number, notes: v.notes,
+          bushels: v.bushels, weight_lb: v.weight_lb, moisture_pct: v.moisture_pct, ticket_number: v.ticket_number, notes: v.notes, origin_status: v.origin_status,
         } });
         if (error) {
           save.disabled = false;
@@ -4108,7 +4120,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           crop: crop || "", gross_lb: gross, tare_lb: tare, net_lb: net, net_bu: bulkNum(t.net_bu),
           moisture_pct: bulkNum(t.moisture_pct), test_weight: bulkNum(t.test_weight),
           notes: t.handwritten_notes || "", vehicle: t.vehicle_id_printed || "", read_issues: t.legibility_issues || [],
-          worker_id: "", field_id: "", bin_id: "", origin: "", from_bin_id: "", to_bin_id: "", truck: "", trailer: "", destination_id: "",
+          worker_id: "", field_id: "", bin_id: "", origin: "", from_bin_id: "", to_bin_id: "", origin_status: "", truck: "", trailer: "", destination_id: "",
           buyer_text: t.buyer_name || "", buyer_location: t.buyer_location || "",
           date_text: t.ticket_date || "", saved: false, error: "",
         };
@@ -4135,6 +4147,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         } else if (isTransfers) {
           if (!r.from_bin_id) errors.push("from bin");
           if (!r.to_bin_id) errors.push("to bin");
+          if (!r.origin_status) errors.push("grain status");
           if (r.from_bin_id && r.from_bin_id === r.to_bin_id) errors.push("two different bins");
         } else {
           if (!r.ticket_number.trim()) errors.push("ticket #");
@@ -4152,8 +4165,8 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         if (isTransfers && r.from_bin_id && r.to_bin_id && r.from_bin_id !== r.to_bin_id && r.crop && r.net_lb > 0) {
           const from = binLv.find((b) => b.id === r.from_bin_id), to = binLv.find((b) => b.id === r.to_bin_id);
           const bu = r.net_bu != null ? r.net_bu : round2(r.net_lb / (STD_LB_PER_BU[r.crop] || 56));
-          const parts = transferParts(ctRows.filter((c) => c.bin_id === r.from_bin_id), bu, r.crop);
-          warns.push(...transferWarnings({ from, to, crop: r.crop, bushels: bu, parts, toContents: ctRows.filter((c) => c.bin_id === r.to_bin_id) }));
+          const parts = transferParts(ctRows.filter((c) => c.bin_id === r.from_bin_id), bu, r.crop, r.origin_status);
+          warns.push(...transferWarnings({ from, to, crop: r.crop, bushels: bu, parts, toContents: ctRows.filter((c) => c.bin_id === r.to_bin_id), status: r.origin_status }));
         }
         if (isLoads && r.bin_id && r.field_id) {
           const bin = binRows.find((b) => b.id === r.bin_id), field = fieldRows.find((f) => f.id === r.field_id);
@@ -4187,7 +4200,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const truckList = [...TRUCK_OPTS, opt("External", "External truck")];
         const trailerList = [...TRAILER_OPTS, opt("External", "External trailer")];
         const setAllDefs = isTransfers
-          ? [["from_bin_id", "From bin", L.bins], ["to_bin_id", "To bin", L.bins], ["crop", "Crop", cropList]]
+          ? [["from_bin_id", "From bin", L.bins], ["to_bin_id", "To bin", L.bins], ["crop", "Crop", cropList], ["origin_status", "Grain status", STATUS_OPTS]]
           : isLoads
           ? [["worker_id", "Worker", L.workers], ["field_id", "Field", L.fields], ["bin_id", "Bin", L.bins], ["crop", "Crop", cropList]]
           : [["worker_id", "Driver", L.workers], ["truck", "Truck", truckList], ["trailer", "Trailer", trailerList], ["origin", "Comes from", originList], ["destination_id", "Buyer", destinationOpts()], ["crop", "Crop", cropList]];
@@ -4195,7 +4208,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           const wrap = mk("label", { style: "display:flex;flex-direction:column;gap:2px;font-size:11px;color:var(--text-muted);" });
           wrap.appendChild(mk("span", { text: label }));
           const sel = optsEl(mk("select", { "data-role": "bulk-setall-" + key }), list, "—");
-          sel.addEventListener("change", () => { if (!sel.value) return; rows.filter((r) => !r.saved).forEach((r) => { r[key] = sel.value; }); sel.value = ""; renderTable(); });
+          sel.addEventListener("change", () => { if (!sel.value) return; rows.filter((r) => !r.saved).forEach((r) => { r[key] = sel.value; if (isTransfers && key === "from_bin_id" && !r.origin_status) r.origin_status = suggestTransferStatus(ctRows.filter((c) => c.bin_id === r.from_bin_id), binLv.find((b) => b.id === r.from_bin_id)); }); sel.value = ""; renderTable(); });
           wrap.appendChild(sel); bar.appendChild(wrap);
         });
         stage.appendChild(bar);
@@ -4213,7 +4226,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         actionRow(button("Close", "bulk-close", "", close), backBtn, saveBtn);
 
         const heads = isTransfers
-          ? ["", "Ticket #", "Date & time", "Crop", "Gross lb", "Tare lb", "Net lb", "Moist %", "Test wt", "From bin", "To bin", "Notes on ticket", "Status"]
+          ? ["", "Ticket #", "Date & time", "Crop", "Gross lb", "Tare lb", "Net lb", "Moist %", "Test wt", "From bin", "To bin", "Grain status", "Notes on ticket", "Status"]
           : isLoads
           ? ["", "Ticket #", "Date & time", "Crop", "Gross lb", "Tare lb", "Net lb", "Moist %", "Test wt", "Field", "Bin", "Worker", "Notes on ticket", "Status"]
           : ["", "Ticket #", "Date & time", "Crop", "Gross lb", "Tare lb", "Net lb", "Moist %", "Test wt", "Driver", "Truck", "Trailer", "Comes from", "Buyer", "Notes on ticket", "Status"];
@@ -4240,6 +4253,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           sel.value = r[key] || "";
           sel.addEventListener("change", () => {
             r[key] = sel.value;
+            if (isTransfers && key === "from_bin_id" && !r.origin_status) { const st = suggestTransferStatus(ctRows.filter((c) => c.bin_id === r.from_bin_id), binLv.find((b) => b.id === r.from_bin_id)); if (st) { r.origin_status = st; renderTable(); return; } }
             if (isTransfers && key === "from_bin_id" && !r.crop) { const b = binLv.find((x) => x.id === r.from_bin_id); if (b && b.crop && CROP_OPTS.some((o) => o.value === normCrop(b.crop))) { r.crop = normCrop(b.crop); renderTable(); return; } }
             if (isLoads && key === "field_id" && !r.crop) { const f = fieldRows.find((x) => x.id === r.field_id); if (f && f.crop && CROP_OPTS.some((o) => o.value === normCrop(f.crop))) { r.crop = normCrop(f.crop); renderTable(); return; } }
             softRefresh();
@@ -4304,6 +4318,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             if (isTransfers) {
               td(select(r, "from_bin_id", L.bins, "100px"));
               td(select(r, "to_bin_id", L.bins, "100px"));
+              td(select(r, "origin_status", STATUS_OPTS, "104px"));
             } else if (isLoads) {
               td(select(r, "field_id", L.fields, "120px"));
               td(select(r, "bin_id", L.bins, "90px"));
@@ -4348,7 +4363,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
               ({ error } = await supabase.rpc("owner_create_transfer", { p_transfer: {
                 client_id: crypto.randomUUID(), transferred_at: r.logged_at, from_bin_id: r.from_bin_id, to_bin_id: r.to_bin_id, crop: r.crop,
                 bushels, weight_lb: r.net_lb, moisture_pct: r.moisture_pct, test_weight: r.test_weight,
-                ticket_number: r.ticket_number.trim() || null, gross_lb: r.gross_lb, tare_lb: r.tare_lb, photo_path: r.path, notes: r.notes || null,
+                ticket_number: r.ticket_number.trim() || null, gross_lb: r.gross_lb, tare_lb: r.tare_lb, photo_path: r.path, notes: r.notes || null, origin_status: r.origin_status,
               } }));
               if (!error && r.ticket_number.trim()) xferTickets.push(r.ticket_number.trim());
             } else if (isLoads) {
@@ -5675,11 +5690,12 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const nameOf = (id) => binNameById.get(id) || id;
         html += `<div class="dash-section-title" style="margin-top:18px;">Recent bin-to-bin transfers</div>
           <table data-role="bin-transfers-table" style="margin-bottom:8px;"><thead><tr>
-            <th style="cursor:default;">When</th><th style="cursor:default;">From</th><th style="cursor:default;">To</th><th style="cursor:default;">Crop</th><th style="cursor:default;">Bushels</th><th style="cursor:default;">Ticket #</th><th style="cursor:default;">Notes</th><th style="cursor:default;">Entered by</th><th style="cursor:default;"></th>
+            <th style="cursor:default;">When</th><th style="cursor:default;">From</th><th style="cursor:default;">To</th><th style="cursor:default;">Crop</th><th style="cursor:default;">Status</th><th style="cursor:default;">Bushels</th><th style="cursor:default;">Ticket #</th><th style="cursor:default;">Notes</th><th style="cursor:default;">Entered by</th><th style="cursor:default;"></th>
           </tr></thead><tbody>${transferRows.map((t) => `<tr data-role="bin-transfer-row">
             <td>${t.transferred_at ? new Date(t.transferred_at).toLocaleString() : "—"}</td>
             <td>${escapeHtml(nameOf(t.from_bin_id))}</td><td>${escapeHtml(nameOf(t.to_bin_id))}</td>
             <td>${escapeHtml(t.crop || "—")}</td>
+            <td data-role="bin-transfer-status">${t.origin_status ? `<span class="badge badge-${escapeHtml(t.origin_status)}">${escapeHtml(t.origin_status[0].toUpperCase() + t.origin_status.slice(1))}</span>` : "—"}</td>
             <td>${Number(t.bushels).toLocaleString(undefined, { maximumFractionDigits: 2 })} bu${t.weight_lb != null ? ` <span class="meta">(${Number(t.weight_lb).toLocaleString()} lb)</span>` : ""}</td>
             <td>${escapeHtml(t.ticket_number || "")}</td>
             <td>${escapeHtml(t.notes || "")}</td>
