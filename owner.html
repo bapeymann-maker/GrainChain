@@ -3214,6 +3214,24 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       if (bushels - moved > 0.005) parts.push({ crop, field_id: null, field_name: null, field_status: null, bushels: Math.round((bushels - moved) * 1e4) / 1e4 });
       return parts;
     }
+    // What is worth a second look about moving grain from one bin to the next. `parts` is what would move
+    // (transferParts), `toContents` what the receiving bin already holds. Shared by the transfer window and the ticket import.
+    function transferWarnings({ from, to, crop, bushels, parts, toContents }) {
+      const warns = [];
+      if (!from || !to || !(bushels > 0) || !crop) return warns;
+      const fmtN = (n) => Math.round(Number(n) || 0).toLocaleString();
+      const normC = (c) => (c === "Beans" ? "Soybeans" : c);
+      const orgSrc = from.status === "organic" || parts.some((p) => p.field_status === "organic");
+      const nonOrgSrc = parts.some((p) => p.field_status && p.field_status !== "organic");
+      if (to.status === "organic" && (nonOrgSrc || (from.status && from.status !== "organic"))) warns.push(`${to.name} is an ORGANIC bin and this grain is not all organic. Non-organic grain in an organic bin can end the bin's organic status until it is cleaned out.`);
+      if (to.status !== "organic" && orgSrc) warns.push(`This is ORGANIC grain going into ${to.name}, which is not an organic bin.`);
+      if (to.crop && normC(to.crop) !== crop) warns.push(`${to.name} is planned for ${normC(to.crop)}; this is ${crop}.`);
+      const other = (toContents || []).filter((c) => Number(c.bushels) > 0.005 && c.crop && normC(c.crop) !== crop);
+      if (other.length) warns.push(`${to.name} already holds ${[...new Set(other.map((c) => normC(c.crop)))].join(", ")} — this would mix crops.`);
+      if (to.capacity_k_bu != null && Number(to.bushels_in_bin) + bushels > to.capacity_k_bu * 1000) warns.push(`That would put ${to.name} over its ${fmtN(to.capacity_k_bu * 1000)} bu capacity.`);
+      if (bushels > Number(from.bushels_in_bin)) warns.push(`${from.name} is only showing ${fmtN(from.bushels_in_bin)} bu, less than the ${fmtN(bushels)} bu you are moving.`);
+      return warns;
+    }
     async function openTransfer() {
       if (!(await ensureEditSession())) return;
       const [lv, ct] = await Promise.all([supabase.from("bin_levels").select("*"), supabase.from("bin_contents").select("*")]);
@@ -3233,6 +3251,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         { key: "bushels", label: "Bushels", type: "number", min: 0 },
         { key: "weight_lb", label: "…or pounds (fills in the bushels)", type: "number", min: 0 },
         { key: "moisture_pct", label: "Moisture %", type: "number", min: 0, max: 100 },
+        { key: "ticket_number", label: "Scale ticket # (if weighed)", type: "text" },
         { key: "notes", label: "Notes", type: "text" },
       ];
       const rec = { transferred_at: new Date().toISOString() };
@@ -3268,17 +3287,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         if (from && bu > 0 && v.crop) {
           const parts = transferParts(contentsOf(from.id), bu, v.crop);
           lines.push("This moves: " + parts.map((p) => `${p.crop || "?"} · ${p.field_name || "origin not recorded"} ${fmt(p.bushels)} bu`).join("; "));
-          if (to) {
-            const orgSrc = from.status === "organic" || parts.some((p) => p.field_status === "organic");
-            const nonOrgSrc = parts.some((p) => p.field_status && p.field_status !== "organic");
-            if (to.status === "organic" && (nonOrgSrc || (from.status && from.status !== "organic"))) warns.push(`${to.name} is an ORGANIC bin and this grain is not all organic. Non-organic grain in an organic bin can end the bin's organic status until it is cleaned out.`);
-            if (to.status !== "organic" && orgSrc) warns.push(`This is ORGANIC grain going into ${to.name}, which is not an organic bin.`);
-            if (to.crop && normCrop(to.crop) !== v.crop) warns.push(`${to.name} is planned for ${normCrop(to.crop)}; this is ${v.crop}.`);
-            const other = contentsOf(to.id).filter((c) => Number(c.bushels) > 0.005 && c.crop && normCrop(c.crop) !== v.crop);
-            if (other.length) warns.push(`${to.name} already holds ${[...new Set(other.map((c) => normCrop(c.crop)))].join(", ")} — this would mix crops.`);
-            if (to.capacity_k_bu != null && Number(to.bushels_in_bin) + bu > to.capacity_k_bu * 1000) warns.push(`That would put ${to.name} over its ${fmt(to.capacity_k_bu * 1000)} bu capacity.`);
-          }
-          if (bu > Number(from.bushels_in_bin)) warns.push(`${from.name} is only showing ${fmt(from.bushels_in_bin)} bu, less than the ${fmt(bu)} bu you are moving.`);
+          warns.push(...transferWarnings({ from, to, crop: v.crop, bushels: bu, parts, toContents: to ? contentsOf(to.id) : [] }));
         }
         info.textContent = lines.join("\n");
         warnEl.textContent = warns.map((w) => "⚠ " + w).join("\n");
@@ -3328,7 +3337,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         save.disabled = true;
         const { error } = await supabase.rpc("owner_create_transfer", { p_transfer: {
           client_id: crypto.randomUUID(), transferred_at: v.transferred_at, from_bin_id: v.from_bin_id, to_bin_id: v.to_bin_id, crop: v.crop,
-          bushels: v.bushels, weight_lb: v.weight_lb, moisture_pct: v.moisture_pct, notes: v.notes,
+          bushels: v.bushels, weight_lb: v.weight_lb, moisture_pct: v.moisture_pct, ticket_number: v.ticket_number, notes: v.notes,
         } });
         if (error) {
           save.disabled = false;
@@ -3981,8 +3990,15 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
 
     async function openBulkImport(mode) {
       if (!(await ensureEditSession())) return;
-      const isLoads = mode === "loads";
-      await Promise.all([isLoads ? ensureLoads() : ensureHauls(), ensureDestinations()]);
+      const isLoads = mode === "loads", isTransfers = mode === "transfers", isHauls = mode === "hauls";
+      await Promise.all([isTransfers ? Promise.resolve() : isLoads ? ensureLoads() : ensureHauls(), ensureDestinations()]);
+      // for bin-to-bin transfers: each bin's level and what it holds (for the warnings), and ticket numbers already used
+      let binLv = [], ctRows = [], xferTickets = [];
+      if (isTransfers) {
+        const [lv, ct, xt] = await Promise.all([supabase.from("bin_levels").select("*"), supabase.from("bin_contents").select("*"), supabase.from("bin_transfers").select("ticket_number")]);
+        binLv = lv.data || []; ctRows = ct.data || [];
+        xferTickets = (xt.data || []).map((x) => x.ticket_number).filter(Boolean);
+      }
       const [L, bRes, fRes] = await Promise.all([
         getEditLookups(),
         supabase.from("bins").select("id, name, status, crop, bin_type"),
@@ -3990,7 +4006,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       ]);
       const binRows = bRes.data || [], fieldRows = fRes.data || [];
       const normCrop = (c) => (c === "Beans" ? "Soybeans" : c);
-      const m = openModal(isLoads ? "Import field-to-bin tickets" : "Import haul tickets");
+      const m = openModal(isTransfers ? "Import bin-to-bin transfer tickets" : isLoads ? "Import field-to-bin tickets" : "Import haul tickets");
       m.box.setAttribute("data-role", "bulk-modal");
       m.box.style.maxWidth = "min(1500px, 100%)";
       const stage = mk("div", { "data-role": "bulk-stage" });
@@ -4007,7 +4023,9 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       // ---------------- step 1: choose files ----------------
       function stepPick(problem) {
         clear();
-        stage.appendChild(mk("div", { style: "font-size:13px;line-height:1.5;", text: isLoads
+        stage.appendChild(mk("div", { style: "font-size:13px;line-height:1.5;", text: isTransfers
+          ? "Choose the scale tickets for these bin-to-bin transfers: several photos and/or PDFs at once (a PDF can hold many tickets). The AI reads every ticket; you then pick the bin each one came from and went to, and check the numbers before anything is saved. They are saved oldest first, so the crop and field record carries through correctly."
+          : isLoads
           ? "Choose the scale tickets for these field-to-bin loads: several photos and/or PDFs at once (a PDF can hold many tickets). The AI reads every ticket; you then pick the field, bin and worker for each one and check the numbers before anything is saved."
           : "Choose the scale tickets for these hauls: several photos and/or PDFs at once (a PDF can hold many tickets). The AI reads every ticket; you then pick the truck, where it came from and the buyer, and check the numbers before anything is saved." }));
         if (problem) stage.appendChild(mk("div", { className: "modal-error", "data-role": "bulk-error", text: problem }));
@@ -4090,16 +4108,17 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           crop: crop || "", gross_lb: gross, tare_lb: tare, net_lb: net, net_bu: bulkNum(t.net_bu),
           moisture_pct: bulkNum(t.moisture_pct), test_weight: bulkNum(t.test_weight),
           notes: t.handwritten_notes || "", vehicle: t.vehicle_id_printed || "", read_issues: t.legibility_issues || [],
-          worker_id: "", field_id: "", bin_id: "", origin: "", truck: "", trailer: "", destination_id: "",
+          worker_id: "", field_id: "", bin_id: "", origin: "", from_bin_id: "", to_bin_id: "", truck: "", trailer: "", destination_id: "",
           buyer_text: t.buyer_name || "", buyer_location: t.buyer_location || "",
           date_text: t.ticket_date || "", saved: false, error: "",
         };
-        if (!isLoads && (t.buyer_name)) r.destination_id = matchDestinationId(t.buyer_name, t.buyer_location) || "";
+        if (isHauls && t.buyer_name) r.destination_id = matchDestinationId(t.buyer_name, t.buyer_location) || "";
         return r;
       }
       const dupSet = () => {
         const set = new Set();
-        if (isLoads) allLoads.forEach((l) => { if (l.raw && l.raw.ticket_number) set.add(normalizeTicketNumber(l.raw.ticket_number)); });
+        if (isTransfers) xferTickets.forEach((n) => set.add(normalizeTicketNumber(n)));
+        else if (isLoads) allLoads.forEach((l) => { if (l.raw && l.raw.ticket_number) set.add(normalizeTicketNumber(l.raw.ticket_number)); });
         else allHauls.forEach((h) => { if (h.ticketNumber && h.ticketNumber !== "—") set.add(normalizeTicketNumber(h.ticketNumber)); });
         return set;
       };
@@ -4113,6 +4132,10 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           if (!r.worker_id) errors.push("worker");
           if (!r.field_id) errors.push("field");
           if (!r.bin_id) errors.push("bin");
+        } else if (isTransfers) {
+          if (!r.from_bin_id) errors.push("from bin");
+          if (!r.to_bin_id) errors.push("to bin");
+          if (r.from_bin_id && r.from_bin_id === r.to_bin_id) errors.push("two different bins");
         } else {
           if (!r.ticket_number.trim()) errors.push("ticket #");
           if (!r.worker_id) errors.push("driver");
@@ -4124,8 +4147,14 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const key = r.ticket_number.trim() ? normalizeTicketNumber(r.ticket_number) : "";
         if (key && dups.has(key)) warns.push("ticket # already on file");
         if (key && seen.get(key) > 1) warns.push("ticket # appears more than once in this import");
-        if (isLoads && !r.ticket_number.trim()) warns.push("no ticket #");
+        if ((isLoads || isTransfers) && !r.ticket_number.trim()) warns.push("no ticket #");
         if (r.read_issues.length) warns.push("hard to read: " + r.read_issues.join("; "));
+        if (isTransfers && r.from_bin_id && r.to_bin_id && r.from_bin_id !== r.to_bin_id && r.crop && r.net_lb > 0) {
+          const from = binLv.find((b) => b.id === r.from_bin_id), to = binLv.find((b) => b.id === r.to_bin_id);
+          const bu = r.net_bu != null ? r.net_bu : round2(r.net_lb / (STD_LB_PER_BU[r.crop] || 56));
+          const parts = transferParts(ctRows.filter((c) => c.bin_id === r.from_bin_id), bu, r.crop);
+          warns.push(...transferWarnings({ from, to, crop: r.crop, bushels: bu, parts, toContents: ctRows.filter((c) => c.bin_id === r.to_bin_id) }));
+        }
         if (isLoads && r.bin_id && r.field_id) {
           const bin = binRows.find((b) => b.id === r.bin_id), field = fieldRows.find((f) => f.id === r.field_id);
           if (bin && field && bin.bin_type !== "wet") {
@@ -4143,7 +4172,9 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const dups = dupSet();
         // rows that match something already on file start unticked
         rows.forEach((r) => { const k = r.ticket_number.trim() ? normalizeTicketNumber(r.ticket_number) : ""; if (k && dups.has(k) && r._dupSeen !== true) { r.include = false; r._dupSeen = true; } });
-        stage.appendChild(mk("div", { style: "font-size:13px;line-height:1.5;margin-bottom:8px;", text: isLoads
+        stage.appendChild(mk("div", { style: "font-size:13px;line-height:1.5;margin-bottom:8px;", text: isTransfers
+          ? "Check each ticket against the file. Pick the bin each transfer came from and went to (use “Set all rows” for the ones that are the same). Rows with something missing can't be saved; a ⚠ is a warning you can accept (bin levels are checked as they stand now, not counting the other tickets in this import). Nothing is saved until you press Save."
+          : isLoads
           ? "Check each ticket against the file. Fill in the field, bin and worker (use “Set all rows” for the ones that are the same). Rows with something missing can't be saved; a ⚠ is a warning you can accept. Nothing is saved until you press Save."
           : "Check each ticket against the file. Fill in the driver, truck, trailer, where it came from and the buyer (use “Set all rows” for the ones that are the same). Rows with something missing can't be saved; a ⚠ is a warning you can accept. Nothing is saved until you press Save." }));
 
@@ -4155,7 +4186,9 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const originList = [...L.bins.map((b) => opt("bin:" + b.value, "Bin: " + b.label)), ...L.fields.map((f) => opt("field:" + f.value, "Field: " + f.label))];
         const truckList = [...TRUCK_OPTS, opt("External", "External truck")];
         const trailerList = [...TRAILER_OPTS, opt("External", "External trailer")];
-        const setAllDefs = isLoads
+        const setAllDefs = isTransfers
+          ? [["from_bin_id", "From bin", L.bins], ["to_bin_id", "To bin", L.bins], ["crop", "Crop", cropList]]
+          : isLoads
           ? [["worker_id", "Worker", L.workers], ["field_id", "Field", L.fields], ["bin_id", "Bin", L.bins], ["crop", "Crop", cropList]]
           : [["worker_id", "Driver", L.workers], ["truck", "Truck", truckList], ["trailer", "Trailer", trailerList], ["origin", "Comes from", originList], ["destination_id", "Buyer", destinationOpts()], ["crop", "Crop", cropList]];
         setAllDefs.forEach(([key, label, list]) => {
@@ -4179,7 +4212,9 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const backBtn = button("Choose more files", "bulk-more", "", () => stepPick());
         actionRow(button("Close", "bulk-close", "", close), backBtn, saveBtn);
 
-        const heads = isLoads
+        const heads = isTransfers
+          ? ["", "Ticket #", "Date & time", "Crop", "Gross lb", "Tare lb", "Net lb", "Moist %", "Test wt", "From bin", "To bin", "Notes on ticket", "Status"]
+          : isLoads
           ? ["", "Ticket #", "Date & time", "Crop", "Gross lb", "Tare lb", "Net lb", "Moist %", "Test wt", "Field", "Bin", "Worker", "Notes on ticket", "Status"]
           : ["", "Ticket #", "Date & time", "Crop", "Gross lb", "Tare lb", "Net lb", "Moist %", "Test wt", "Driver", "Truck", "Trailer", "Comes from", "Buyer", "Notes on ticket", "Status"];
         const input = (r, key, type, w, props = {}) => {
@@ -4205,6 +4240,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           sel.value = r[key] || "";
           sel.addEventListener("change", () => {
             r[key] = sel.value;
+            if (isTransfers && key === "from_bin_id" && !r.crop) { const b = binLv.find((x) => x.id === r.from_bin_id); if (b && b.crop && CROP_OPTS.some((o) => o.value === normCrop(b.crop))) { r.crop = normCrop(b.crop); renderTable(); return; } }
             if (isLoads && key === "field_id" && !r.crop) { const f = fieldRows.find((x) => x.id === r.field_id); if (f && f.crop && CROP_OPTS.some((o) => o.value === normCrop(f.crop))) { r.crop = normCrop(f.crop); renderTable(); return; } }
             softRefresh();
           });
@@ -4265,7 +4301,10 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             td(input(r, "net_lb", "number", "72px", { step: "any" }));
             td(input(r, "moisture_pct", "number", "54px", { step: "any" }));
             td(input(r, "test_weight", "number", "54px", { step: "any" }));
-            if (isLoads) {
+            if (isTransfers) {
+              td(select(r, "from_bin_id", L.bins, "100px"));
+              td(select(r, "to_bin_id", L.bins, "100px"));
+            } else if (isLoads) {
               td(select(r, "field_id", L.fields, "120px"));
               td(select(r, "bin_id", L.bins, "90px"));
               td(select(r, "worker_id", L.workers, "90px"));
@@ -4299,10 +4338,20 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           const { data: sess } = await supabase.auth.getSession();
           const email = sess?.session?.user?.email || "unknown";
           let okN = 0, stopped = false;
-          for (const r of todo) {
+          // transfers go in oldest first: each one works out what it moved from what the bin held at that moment
+          const ordered = isTransfers ? [...todo].sort((a, b) => new Date(a.logged_at) - new Date(b.logged_at)) : todo;
+          for (const r of ordered) {
             r.error = "";
             let error;
-            if (isLoads) {
+            if (isTransfers) {
+              const bushels = r.net_bu != null ? r.net_bu : round2(r.net_lb / (STD_LB_PER_BU[r.crop] || 56));
+              ({ error } = await supabase.rpc("owner_create_transfer", { p_transfer: {
+                client_id: crypto.randomUUID(), transferred_at: r.logged_at, from_bin_id: r.from_bin_id, to_bin_id: r.to_bin_id, crop: r.crop,
+                bushels, weight_lb: r.net_lb, moisture_pct: r.moisture_pct, test_weight: r.test_weight,
+                ticket_number: r.ticket_number.trim() || null, gross_lb: r.gross_lb, tare_lb: r.tare_lb, photo_path: r.path, notes: r.notes || null,
+              } }));
+              if (!error && r.ticket_number.trim()) xferTickets.push(r.ticket_number.trim());
+            } else if (isLoads) {
               const bushels = r.net_bu != null ? r.net_bu : round2(r.net_lb / (STD_LB_PER_BU[r.crop] || 56));
               ({ error } = await supabase.rpc("owner_create_load", { p_load: {
                 client_id: crypto.randomUUID(), logged_at: r.logged_at, worker_id: r.worker_id, field_id: r.field_id, bin_id: r.bin_id, crop: r.crop,
@@ -4331,7 +4380,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             }
             if (error) {
               if (/Two-step sign-in required/i.test(error.message)) { r.error = "your authenticator code expired — confirm it and press Save again"; stopped = true; ensureEditSession(); break; }
-              if (/could not find the function|PGRST202/i.test(error.message) || error.code === "PGRST202") { r.error = isLoads ? "not set up — run allow-owner-add-loads.sql and allow-owner-import-tickets.sql" : "not set up — run allow-owner-scan-entry.sql"; stopped = true; break; }
+              if (/could not find the function|PGRST202/i.test(error.message) || error.code === "PGRST202") { r.error = isTransfers ? "not set up — run add-bin-transfers.sql" : isLoads ? "not set up — run allow-owner-add-loads.sql and allow-owner-import-tickets.sql" : "not set up — run allow-owner-scan-entry.sql"; stopped = true; break; }
               r.error = error.message;
               continue;
             }
@@ -4341,7 +4390,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           backBtn.disabled = false;
           renderTable();
           say(`Saved ${okN} of ${todo.length}.` + (failed ? `\n${failed} not saved — the reason is in each row's Status; fix it and press Save again.` : "") + (stopped ? "\nStopped early." : ""), failed ? "error" : "note");
-          if (okN) { if (isLoads) await fetchLoads(); else { await fetchHauls(); render(); } statusLine.textContent = `Saved ✓ — ${okN} ticket${okN === 1 ? "" : "s"} imported`; }
+          if (okN) { if (isTransfers) await renderDashboard(); else if (isLoads) await fetchLoads(); else { await fetchHauls(); render(); } statusLine.textContent = `Saved ✓ — ${okN} ticket${okN === 1 ? "" : "s"} imported`; }
         }
       }
       stepPick();
@@ -5606,7 +5655,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             </tr>`;
         })
         .join("");
-      html += `<div class="dash-section-title" style="margin-top:24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">Bin inventory — right now <button class="small-btn gold" data-role="bin-transfer-btn" title="Move grain from one bin to another">Transfer bin to bin</button></div>`;
+      html += `<div class="dash-section-title" style="margin-top:24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">Bin inventory — right now <button class="small-btn gold" data-role="bin-transfer-btn" title="Move grain from one bin to another">Transfer bin to bin</button> <button class="small-btn" data-role="bin-transfer-import-btn" title="Import transfers that were weighed on your own scale: choose several ticket photos or PDFs at once">Import transfer tickets</button></div>`;
       html +=
         activeBins.length === 0
           ? `<div style="color:var(--text-muted);font-size:13px;">No bins on file.</div>`
@@ -5626,12 +5675,13 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const nameOf = (id) => binNameById.get(id) || id;
         html += `<div class="dash-section-title" style="margin-top:18px;">Recent bin-to-bin transfers</div>
           <table data-role="bin-transfers-table" style="margin-bottom:8px;"><thead><tr>
-            <th style="cursor:default;">When</th><th style="cursor:default;">From</th><th style="cursor:default;">To</th><th style="cursor:default;">Crop</th><th style="cursor:default;">Bushels</th><th style="cursor:default;">Notes</th><th style="cursor:default;">Entered by</th><th style="cursor:default;"></th>
+            <th style="cursor:default;">When</th><th style="cursor:default;">From</th><th style="cursor:default;">To</th><th style="cursor:default;">Crop</th><th style="cursor:default;">Bushels</th><th style="cursor:default;">Ticket #</th><th style="cursor:default;">Notes</th><th style="cursor:default;">Entered by</th><th style="cursor:default;"></th>
           </tr></thead><tbody>${transferRows.map((t) => `<tr data-role="bin-transfer-row">
             <td>${t.transferred_at ? new Date(t.transferred_at).toLocaleString() : "—"}</td>
             <td>${escapeHtml(nameOf(t.from_bin_id))}</td><td>${escapeHtml(nameOf(t.to_bin_id))}</td>
             <td>${escapeHtml(t.crop || "—")}</td>
             <td>${Number(t.bushels).toLocaleString(undefined, { maximumFractionDigits: 2 })} bu${t.weight_lb != null ? ` <span class="meta">(${Number(t.weight_lb).toLocaleString()} lb)</span>` : ""}</td>
+            <td>${escapeHtml(t.ticket_number || "")}</td>
             <td>${escapeHtml(t.notes || "")}</td>
             <td class="meta">${escapeHtml(String(t.entered_by || "").replace(/^owner-entry:/, ""))}</td>
             <td><button class="small-btn danger" data-delete-transfer="${escapeHtml(String(t.client_id))}">Delete</button></td>
@@ -5645,6 +5695,8 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       dashContentEl.innerHTML = html;
       const transferBtn = dashContentEl.querySelector("[data-role=bin-transfer-btn]");
       if (transferBtn) transferBtn.addEventListener("click", () => openTransfer());
+      const transferImportBtn = dashContentEl.querySelector("[data-role=bin-transfer-import-btn]");
+      if (transferImportBtn) transferImportBtn.addEventListener("click", () => openBulkImport("transfers"));
       dashContentEl.querySelectorAll("[data-delete-transfer]").forEach((btn) => {
         btn.addEventListener("click", () => {
           const t = (transferRows || []).find((x) => String(x.client_id) === btn.getAttribute("data-delete-transfer"));
