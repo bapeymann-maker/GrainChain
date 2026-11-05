@@ -4872,6 +4872,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
     }
     async function ensureYield() {
       if (!yieldLoaded) await fetchYield();
+      await ensurePartners(); // names for the share-crop partners
     }
 
     const normYieldCrop = (c) => {
@@ -4914,12 +4915,29 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const perAc = numOrNull(r.actual_bu_ac);
       return perAc != null ? acres * perAc : null;
     };
+    // Share crop. A planting can belong partly to a partner: partner_id is who, partner_pct is THEIR percentage
+    // (55 = they get 55%, you get 45%). Empty = 100% yours.
+    const yieldShareOf = (r) => {
+      const pct = r ? numOrNull(r.partner_pct) : null;
+      return r && r.partner_id != null && pct != null && pct > 0 && pct < 100 ? { partner_id: r.partner_id, pct } : null;
+    };
+    // What a line of grain in a bin belongs to, from its field's planting that season (the season of its last load):
+    // { kind: "mine" } 100% yours, { kind: "share", partner_id, pct }, or { kind: "unknown" } when no field was recorded.
+    function inventoryShareOf(line) {
+      if (line.field_id == null || line.field_id === "") return { kind: "unknown" };
+      const crop = normYieldCrop(line.crop);
+      const season = line.last_load_at ? new Date(line.last_load_at).getFullYear() : new Date().getFullYear();
+      const rows = yieldRows.filter((r) => String(r.field_id) === String(line.field_id) && r.season === season);
+      const row = rows.find((r) => crop && normYieldCrop(r.crop) === crop) || rows.find((r) => !r.crop && (Number(r.planting) || 1) === 1) || null;
+      const sh = yieldShareOf(row);
+      return sh ? { kind: "share", ...sh } : { kind: "mine" };
+    }
     // Totals by crop for a season. Projected is only ever planned yield × acres — entering what was actually
     // harvested never changes it — and harvested is what was actually brought in (the typed total, or acres ×
     // actual bu/ac). A field with no planned yield isn't in the projected figure and is counted as missing.
     function yieldTotals(season) {
       const out = {};
-      YIELD_CLASSES.forEach((c) => (out[c.label] = { fields: 0, acres: 0, projected: 0, actual: 0, missing: 0 }));
+      YIELD_CLASSES.forEach((c) => (out[c.label] = { fields: 0, acres: 0, projected: 0, actual: 0, missing: 0, shared: 0, partnerActual: 0 }));
       yieldFieldList().forEach((f) => {
         [1, 2].forEach((pl) => { // the main crop, then a double crop if there is one
           const crop = yieldClassOf(f, season, pl);
@@ -4932,6 +4950,8 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           t.fields += 1;
           t.acres += acres;
           if (harvested != null) t.actual += harvested;
+          const sh = yieldShareOf(r);
+          if (sh) { t.shared += 1; if (harvested != null) t.partnerActual += (harvested * sh.pct) / 100; }
           if (planned != null) t.projected += acres * planned;
           else t.missing += 1;
         });
@@ -4946,6 +4966,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       const payload = { field_id: f.id, season: yieldSeason, planting: pl, ...(cls ? { crop: cls.crop, status: cls.status } : {}), ...patch };
       const { data, error } = await supabase.from("field_yields").upsert(payload, { onConflict: "field_id,season,planting" }).select();
       if (error && (/'(planting|acres)' column|ON CONFLICT/i.test(error.message))) throw new Error("the database isn't set up for double crops and partial acres yet — run add-field-yields.sql in the Supabase SQL Editor (it also refreshes Supabase's schema cache), then reload this page");
+      if (error && /partner_id|partner_pct|field_yields_partner/i.test(error.message)) throw new Error("the database isn't set up for share crop yet — run add-field-share-crop.sql in the Supabase SQL Editor, then reload this page");
       if (error && /actual_bu\b|schema cache/i.test(error.message) && /actual_bu\b/.test(error.message)) throw new Error("the database doesn't have the total-bushels column yet — run add-field-yields.sql in the Supabase SQL Editor (it also refreshes Supabase's schema cache), then reload this page");
       if (error || !data || data.length === 0) throw new Error(error ? error.message : "Nothing was saved — check that add-field-yields.sql has been run");
       const saved = data[0];
@@ -4991,6 +5012,47 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       bar.append(seasonSel, sortSel, search, note);
       root.appendChild(bar);
 
+      // ---- share crop for several fields at once (e.g. every field whose name starts with M-) ----
+      const shareBar = document.createElement("div");
+      shareBar.setAttribute("data-role", "yield-share-bar");
+      shareBar.style.cssText = "display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:8px;border:1px solid var(--border);border-radius:8px;font-size:13px;";
+      const partnerOpts = () => allPartners.map((p) => `<option value="${escapeHtml(String(p.id))}">${escapeHtml(p.name)}</option>`).join("");
+      shareBar.innerHTML = `<span>Share crop, many fields:</span>
+        <select data-role="share-bulk-partner"><option value="">100% mine (no partner)</option>${partnerOpts()}</select>
+        <label>partner's % <input data-role="share-bulk-pct" type="number" min="1" max="99" step="any" inputmode="decimal" style="width:64px;"></label>
+        <label>fields starting with <input data-role="share-bulk-prefix" type="text" value="M-" style="width:70px;"></label>
+        <button class="small-btn" data-role="share-bulk-apply">Apply to ${"{season}"} fields</button>
+        <span class="meta" data-role="share-bulk-msg"></span>`;
+      root.appendChild(shareBar);
+      const bulkPartner = shareBar.querySelector("[data-role=share-bulk-partner]"), bulkPct = shareBar.querySelector("[data-role=share-bulk-pct]"), bulkPrefix = shareBar.querySelector("[data-role=share-bulk-prefix]");
+      const bulkApply = shareBar.querySelector("[data-role=share-bulk-apply]"), bulkMsg = shareBar.querySelector("[data-role=share-bulk-msg]");
+      const paintBulkLabel = () => { bulkApply.textContent = `Apply to ${yieldSeason} main-crop fields`; };
+      paintBulkLabel();
+      bulkApply.addEventListener("click", async () => {
+        bulkMsg.style.color = ""; bulkMsg.textContent = "";
+        const prefix = bulkPrefix.value.trim().toLowerCase();
+        if (!prefix) { bulkMsg.style.color = "var(--danger)"; bulkMsg.textContent = "Type what the field names start with (for example M-)."; return; }
+        const pid = bulkPartner.value === "" ? null : Number(bulkPartner.value);
+        const pct = numOrNull(bulkPct.value);
+        if (pid != null && !(pct != null && pct > 0 && pct < 100)) { bulkMsg.style.color = "var(--danger)"; bulkMsg.textContent = "Type the partner's percentage, between 1 and 99."; return; }
+        const hit = yieldFieldList().filter((f) => (f.name || "").toLowerCase().startsWith(prefix));
+        if (!hit.length) { bulkMsg.style.color = "var(--danger)"; bulkMsg.textContent = `No field name starts with "${bulkPrefix.value.trim()}".`; return; }
+        const what = pid == null ? "100% yours (no partner)" : `${allPartners.find((x) => x.id === pid)?.name || "the partner"} ${pct}% / you ${Math.round((100 - pct) * 100) / 100}%`;
+        if (!window.confirm(`Set ${yieldSeason} main-crop share on ${hit.length} field${hit.length === 1 ? "" : "s"} starting with "${bulkPrefix.value.trim()}" to ${what}?\n\n${hit.slice(0, 12).map((f) => f.name).join(", ")}${hit.length > 12 ? ", …" : ""}`)) return;
+        bulkApply.disabled = true; bulkMsg.textContent = "Saving…";
+        const payload = hit.map((f) => ({ field_id: f.id, season: yieldSeason, planting: 1, partner_id: pid, partner_pct: pid == null ? null : pct }));
+        const { data, error } = await supabase.from("field_yields").upsert(payload, { onConflict: "field_id,season,planting" }).select();
+        bulkApply.disabled = false;
+        if (error || !data) {
+          bulkMsg.style.color = "var(--danger)";
+          bulkMsg.textContent = "Not saved: " + (error && /partner_id|partner_pct|field_yields_partner/i.test(error.message) ? "the database isn't set up for share crop yet — run add-field-share-crop.sql in the Supabase SQL Editor, then reload this page" : error ? error.message : "nothing came back");
+          return;
+        }
+        data.forEach((saved) => { const i = yieldRows.findIndex((r) => String(r.field_id) === String(saved.field_id) && r.season === saved.season && (Number(saved.planting) || 1) === (Number(r.planting) || 1)); if (i >= 0) yieldRows[i] = saved; else yieldRows.push(saved); });
+        bulkMsg.textContent = `Saved ✓ — ${hit.length} field${hit.length === 1 ? "" : "s"}`;
+        rows.clear(); paintRows(); paintSummary();
+      });
+
       const summary = document.createElement("div");
       summary.className = "dash-grid";
       summary.setAttribute("data-role", "yield-summary");
@@ -5003,7 +5065,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       table.innerHTML = `<thead><tr>
         <th style="cursor:default;">Field</th><th style="cursor:default;" title="Acres planted to this grain. Leave empty for the whole field; type fewer when only part of the field was planted.">Acres planted</th><th data-role="yield-grain-head" style="cursor:pointer;" title="Click to sort by grain">Grain</th>
         <th style="cursor:default;" title="Bushels per acre (pounds per acre for peas and sweet corn)">Planned per ac</th><th style="cursor:default;">Past seasons</th>
-        <th style="cursor:default;" title="Bushels per acre (pounds per acre for peas and sweet corn)">Actual per ac</th><th style="cursor:default;">Projected</th><th style="cursor:default;" title="Total harvested from the field — dry bushels, or pounds for peas and sweet corn. Type it and the per-acre yield is worked out">Harvested total</th><th style="cursor:default;"></th>
+        <th style="cursor:default;" title="Bushels per acre (pounds per acre for peas and sweet corn)">Actual per ac</th><th style="cursor:default;">Projected</th><th style="cursor:default;" title="Total harvested from the field — dry bushels, or pounds for peas and sweet corn. Type it and the per-acre yield is worked out">Harvested total</th><th style="cursor:default;" title="Does a partner share this crop? Pick the partner and type THEIR percentage (55 = they get 55%, you 45%). Leave on 100% mine when it is all yours.">Share crop</th><th style="cursor:default;"></th>
       </tr></thead>`;
       const tbody = document.createElement("tbody");
       table.appendChild(tbody);
@@ -5029,6 +5091,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             <div class="meta">${c.fields} field${c.fields === 1 ? "" : "s"} · ${fmtAcres(c.acres)} acres</div>
             <div class="dash-stat-row"><span>Projected </span><span class="driver-val" data-role="sum-projected">${fmtBuInt(c.projected)} ${yieldUnit(crop)}</span></div>
             <div class="dash-stat-row"><span>Harvested </span><span class="ai-val" data-role="sum-actual">${fmtBuInt(c.actual)} ${yieldUnit(crop)}</span></div>
+            ${c.shared > 0 ? `<div class="dash-stat-row" title="${c.shared} share-crop field${c.shared === 1 ? "" : "s"} — the partner's part is taken out"><span>Your share </span><span class="ai-val" data-role="sum-mine">${fmtBuInt(c.actual - c.partnerActual)} ${yieldUnit(crop)}</span></div>` : ""}
             ${c.missing > 0 ? `<div class="meta" data-role="sum-missing">${c.missing} field${c.missing === 1 ? "" : "s"} with no yield yet</div>` : ""}`;
           summary.appendChild(card);
         });
@@ -5110,6 +5173,18 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         harvIn.setAttribute("data-role", "yield-harvested-bu");
         harvIn.title = "Total harvested from this planting (dry bushels; pounds for peas and sweet corn) — type it and the actual yield per acre is worked out";
         harvTd.appendChild(harvIn);
+        const shareTd = td(); shareTd.setAttribute("data-role", "yield-share");
+        const shareSel = document.createElement("select");
+        shareSel.setAttribute("data-role", "yield-share-partner");
+        shareSel.title = "Who shares this crop with you";
+        const pctIn = document.createElement("input");
+        pctIn.type = "number"; pctIn.min = "1"; pctIn.max = "99"; pctIn.step = "any"; pctIn.inputMode = "decimal";
+        pctIn.style.width = "58px"; pctIn.style.marginLeft = "4px";
+        pctIn.setAttribute("data-role", "yield-share-pct");
+        pctIn.title = "The partner's percentage (55 = they get 55%, you 45%)";
+        pctIn.placeholder = "%";
+        const mineNote = document.createElement("div"); mineNote.className = "meta"; mineNote.setAttribute("data-role", "yield-share-mine");
+        shareTd.append(shareSel, pctIn, mineNote);
         const statusTd = td(); statusTd.setAttribute("data-role", "yield-status"); statusTd.className = "meta";
 
         function paint() {
@@ -5133,6 +5208,13 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             actual.value = perAc != null ? String(Math.round(perAc * 100) / 100) : "";
             harvIn.value = total != null ? String(Math.round(total * 10) / 10) : "";
           }
+          // share crop: the partner, their percentage, and what is left for you
+          shareSel.innerHTML = `<option value="">100% mine</option>` + allPartners.map((p) => `<option value="${escapeHtml(String(p.id))}">${escapeHtml(p.name)}</option>`).join("");
+          const sh = yieldShareOf(r);
+          shareSel.value = r && r.partner_id != null ? String(r.partner_id) : "";
+          if (active !== pctIn) pctIn.value = r && numOrNull(r.partner_pct) != null ? String(r.partner_pct) : "";
+          pctIn.style.display = shareSel.value ? "" : "none";
+          mineNote.textContent = sh ? `you ${Math.round((100 - sh.pct) * 100) / 100}%${total != null ? ` · ${fmtBuInt((total * (100 - sh.pct)) / 100)} ${unit}` : ""}` : "";
           const hist = yieldHistory(f, yieldSeason, pl);
           histTd.textContent = hist ? `avg ${fmtYield(hist.avg)} (${hist.years} season${hist.years === 1 ? "" : "s"})` : "—";
           avgBtn.style.display = hist ? "" : "none";
@@ -5233,6 +5315,25 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           await commit(cls ? { crop: cls.crop, status: cls.status } : { crop: null, status: null });
           if (yieldSort === "grain" && pl === 1) paintRows(); // the field moves to its new place in the list
         });
+        // Share crop: a partner needs a percentage, and the two are saved together.
+        async function saveShare() {
+          const pid = shareSel.value === "" ? null : Number(shareSel.value);
+          if (pid == null) { await commit({ partner_id: null, partner_pct: null }, "Saved (100% yours)"); return; }
+          const pct = numOrNull(pctIn.value);
+          if (pct == null || !(pct > 0 && pct < 100)) { pctIn.style.display = ""; setStatus("Type the partner's percentage (1 to 99), then leave the box", true); return; }
+          await commit({ partner_id: pid, partner_pct: pct }, "Saved (share crop)");
+        }
+        shareSel.addEventListener("change", async () => {
+          if (shareSel.value === "") { pctIn.value = ""; await saveShare(); return; }
+          pctIn.style.display = "";
+          if (!numOrNull(pctIn.value)) { // suggest the percentage last used with this partner
+            const last = [...yieldRows].reverse().find((x) => String(x.partner_id) === shareSel.value && numOrNull(x.partner_pct) != null);
+            if (last) pctIn.value = String(last.partner_pct);
+          }
+          if (numOrNull(pctIn.value)) await saveShare(); else { setStatus("Type the partner's percentage (1 to 99), then leave the box", true); pctIn.focus(); }
+        });
+        pctIn.addEventListener("keydown", (e) => { if (e.key === "Enter") pctIn.blur(); });
+        pctIn.addEventListener("change", async () => { if (shareSel.value !== "") await saveShare(); });
         avgBtn.addEventListener("click", () => {
           const hist = yieldHistory(f, yieldSeason, pl);
           if (hist) commit({ planned_bu_ac: Math.round(hist.avg * 10) / 10 }, "Saved (past-season average)");
@@ -5291,7 +5392,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         });
         if (!tbody.firstChild) {
           const tr = document.createElement("tr");
-          tr.innerHTML = `<td colspan="9" class="meta">${q ? "No field matches that." : "No fields on file."}</td>`;
+          tr.innerHTML = `<td colspan="10" class="meta">${q ? "No field matches that." : "No fields on file."}</td>`;
           tbody.appendChild(tr);
         }
       }
@@ -5639,6 +5740,18 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       // already uses for bin selection, so these numbers match exactly
       // what a driver sees when picking a bin. Sorted client-side rather
       // than relying on the query's own ordering. ----
+      // ---- whose grain is it? Each line of a bin's record is followed back to its field's share-crop setting (Yield tab).
+      const anyShare = !yieldError && yieldRows.some((r) => yieldShareOf(r));
+      const ownTotals = new Map(); // crop -> { mine, share, yours, partners: Map(name -> bu), unknown }
+      const ownTally = (into, c) => {
+        const bu = Math.max(0, Number(c.bushels) || 0);
+        const o = inventoryShareOf(c);
+        if (o.kind === "mine") into.mine += bu;
+        else if (o.kind === "share") { into.share += bu; into.yours += (bu * (100 - o.pct)) / 100; const nm = partnerName(o.partner_id); into.partners.set(nm, (into.partners.get(nm) || 0) + (bu * o.pct) / 100); }
+        else into.unknown += bu;
+        return o;
+      };
+      const newOwn = () => ({ mine: 0, share: 0, yours: 0, partners: new Map(), unknown: 0 });
       const activeBins = (binRows || []).filter((b) => b.active !== false).sort((a, b) => (a.site || "").localeCompare(b.site || "") || (a.name || "").localeCompare(b.name || ""));
       const binRowsHtml = activeBins
         .map((b) => {
@@ -5650,10 +5763,20 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           const normC = (c) => (c === "Beans" ? "Soybeans" : c);
           const offPlan = b.crop && loaded.some((p) => p.crop && normC(p.crop) !== normC(b.crop));
           const notOrganic = b.status === "organic" && loaded.some((p) => p.field_status && p.field_status !== "organic");
+          const binOwn = newOwn();
+          const ownOf = new Map();
+          loaded.forEach((p) => {
+            const o = ownTally(binOwn, p); ownOf.set(p, o);
+            const key = normC(p.crop) || "Unknown";
+            if (!ownTotals.has(key)) ownTotals.set(key, newOwn());
+            ownTally(ownTotals.get(key), p);
+          });
+          const ownLabel = (p) => { if (!anyShare) return ""; const o = ownOf.get(p); return o.kind === "share" ? ` · SHARE CROP ${escapeHtml(partnerName(o.partner_id))} ${o.pct}%` : o.kind === "mine" ? " · 100% yours" : ""; };
+          const ownLine = anyShare && loaded.length ? `<div data-role="bin-ownership" class="meta">${[binOwn.mine > 0.005 ? `100% yours ${Math.round(binOwn.mine).toLocaleString()} bu` : "", binOwn.share > 0.005 ? `share crop ${Math.round(binOwn.share).toLocaleString()} bu (your part ${Math.round(binOwn.yours).toLocaleString()})` : "", binOwn.unknown > 0.005 ? `origin not recorded ${Math.round(binOwn.unknown).toLocaleString()} bu` : ""].filter(Boolean).join(" · ")}</div>` : "";
           const loadedCell = loaded.length === 0
             ? "—"
-            : loaded.slice(0, 4).map((p) => `<div data-role="bin-content-line" title="${escapeHtml(p.loads === 0 ? "Arrived by bin-to-bin transfer" : `${p.loads} load${p.loads === 1 ? "" : "s"}, last ${p.last_load_at ? new Date(p.last_load_at).toLocaleDateString() : "?"}`)}">${escapeHtml(p.crop || "crop not recorded")} — ${escapeHtml(p.field_name || "field not recorded")} <span class="meta">(${Math.round(Number(p.bushels) || 0).toLocaleString()} bu${p.field_status ? ` · ${escapeHtml(p.field_status)}` : ""}${Number(p.transferred_bu) > 0.005 ? ` · ${Math.round(Number(p.transferred_bu)).toLocaleString()} bu moved in` : Number(p.transferred_bu) < -0.005 ? ` · ${Math.round(-Number(p.transferred_bu)).toLocaleString()} bu moved out` : ""})</span></div>`).join("") +
-              (loaded.length > 4 ? `<div class="meta">+ ${loaded.length - 4} more</div>` : "") +
+            : loaded.slice(0, 4).map((p) => `<div data-role="bin-content-line" title="${escapeHtml(p.loads === 0 ? "Arrived by bin-to-bin transfer" : `${p.loads} load${p.loads === 1 ? "" : "s"}, last ${p.last_load_at ? new Date(p.last_load_at).toLocaleDateString() : "?"}`)}">${escapeHtml(p.crop || "crop not recorded")} — ${escapeHtml(p.field_name || "field not recorded")} <span class="meta">(${Math.round(Number(p.bushels) || 0).toLocaleString()} bu${p.field_status ? ` · ${escapeHtml(p.field_status)}` : ""}${ownLabel(p)}${Number(p.transferred_bu) > 0.005 ? ` · ${Math.round(Number(p.transferred_bu)).toLocaleString()} bu moved in` : Number(p.transferred_bu) < -0.005 ? ` · ${Math.round(-Number(p.transferred_bu)).toLocaleString()} bu moved out` : ""})</span></div>`).join("") +
+              (loaded.length > 4 ? `<div class="meta">+ ${loaded.length - 4} more</div>` : "") + ownLine +
               (notOrganic ? `<div data-role="bin-not-organic" style="color:var(--danger);font-size:12px;">⚠ non-organic grain in an organic bin</div>` : "") +
               (offPlan ? `<div data-role="bin-off-plan" style="color:var(--danger);font-size:12px;">⚠ not the planned crop (${escapeHtml(b.crop)})</div>` : "");
           return `
@@ -5670,6 +5793,22 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
             </tr>`;
         })
         .join("");
+      const fmtO = (n) => Math.round(n).toLocaleString();
+      if (yieldError) {
+        // the yield table isn't there, so nothing to follow the share crop from
+      } else if (!anyShare) {
+        html += `<div data-role="ownership-hint" class="meta" style="margin-top:18px;">Share crop: no field has a partner yet. Set it on the Yield tab (field by field, or many at once) and this page will show which grain in the bins is 100% yours and which is share crop.</div>`;
+      } else if (ownTotals.size) {
+        html += `<div class="dash-section-title" style="margin-top:24px;">Whose grain is in the bins</div>
+          <table data-role="ownership-table" style="margin-bottom:8px;"><thead><tr>
+            <th style="cursor:default;">Crop</th><th style="cursor:default;" title="From fields with no partner">100% yours</th><th style="cursor:default;" title="From fields a partner shares">Share crop</th><th style="cursor:default;">Your part of the share crop</th><th style="cursor:default;">Partner's part</th><th style="cursor:default;" title="Grain whose field wasn't recorded (it came through the dryer or was moved with no record)">Origin not recorded</th><th style="cursor:default;" title="100% yours plus your part of the share crop">Yours in all</th>
+          </tr></thead><tbody>${[...ownTotals.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([crop, o]) => `<tr data-role="ownership-row" data-crop="${escapeHtml(crop)}">
+            <td>${escapeHtml(crop)}</td><td>${fmtO(o.mine)} bu</td><td>${fmtO(o.share)} bu</td><td>${fmtO(o.yours)} bu</td>
+            <td>${o.partners.size ? [...o.partners.entries()].map(([nm, bu]) => `${escapeHtml(nm)} ${fmtO(bu)} bu`).join("<br>") : "—"}</td>
+            <td>${fmtO(o.unknown)} bu</td><td><b>${fmtO(o.mine + o.yours)} bu</b></td>
+          </tr>`).join("")}</tbody></table>
+          <div class="meta" style="margin-bottom:8px;">Counts what the bins' loading record accounts for. The share comes from each field's setting on the Yield tab for the season the grain was loaded.</div>`;
+      }
       html += `<div class="dash-section-title" style="margin-top:24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">Bin inventory — right now <button class="small-btn gold" data-role="bin-transfer-btn" title="Move grain from one bin to another">Transfer bin to bin</button> <button class="small-btn" data-role="bin-transfer-import-btn" title="Import transfers that were weighed on your own scale: choose several ticket photos or PDFs at once">Import transfer tickets</button></div>`;
       html +=
         activeBins.length === 0
