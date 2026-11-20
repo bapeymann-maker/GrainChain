@@ -201,6 +201,7 @@
       <button id="view-dashboard-btn" class="view-btn">Dashboard</button>
       <button id="view-harvest-btn" class="view-btn">Harvest</button>
       <button id="view-yield-btn" class="view-btn">Yield</button>
+      <button id="view-bins-btn" class="view-btn">Bins</button>
       <button id="view-affidavits-btn" class="view-btn">Affidavits</button>
       <button id="view-rigs-btn" class="view-btn">Rigs</button>
       <button id="view-editlog-btn" class="view-btn">Edit log</button>
@@ -223,6 +224,7 @@
             <th data-sort="status">Status</th>
             <th data-sort="truck">Truck</th>
             <th data-sort="load">Load</th>
+            <th data-sort="ticket_no" title="Scale ticket number, when the load was weighed">Ticket #</th>
             <th data-sort="moisture">Moisture</th>
             <th data-sort="test_weight">Test Wt</th>
             <th data-sort="bin">Bin</th>
@@ -329,6 +331,10 @@
         <div id="yield-content"></div>
       </div>
 
+      <div id="bins-view" style="display:none;">
+        <div id="bins-content"></div>
+      </div>
+
       <div id="affidavits-view" style="display:none;">
         <div id="affidavits-content"></div>
       </div>
@@ -378,6 +384,8 @@
     const viewDashboardBtn = document.getElementById("view-dashboard-btn");
     const viewHarvestBtn = document.getElementById("view-harvest-btn");
     const viewYieldBtn = document.getElementById("view-yield-btn");
+    const viewBinsBtn = document.getElementById("view-bins-btn");
+    const binsView = document.getElementById("bins-view");
     const viewAffidavitsBtn = document.getElementById("view-affidavits-btn");
     const viewRigsBtn = document.getElementById("view-rigs-btn");
     const viewEditLogBtn = document.getElementById("view-editlog-btn");
@@ -807,8 +815,8 @@
     haulsCsvBtnEl.addEventListener("click", downloadHaulsCsv);
     haulsDiffOnlyEl.addEventListener("change", render);
 
-    const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn, dashboard: viewDashboardBtn, harvest: viewHarvestBtn, yield: viewYieldBtn, affidavits: viewAffidavitsBtn, rigs: viewRigsBtn, editlog: viewEditLogBtn };
-    const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView, dashboard: dashboardView, harvest: harvestView, yield: yieldView, affidavits: affidavitsView, rigs: rigsView, editlog: editLogView };
+    const VIEW_BTNS = { loads: viewLoadsBtn, field: viewFieldBtn, hauls: viewHaulsBtn, contracts: viewContractsBtn, settlements: viewSettlementsBtn, dashboard: viewDashboardBtn, harvest: viewHarvestBtn, yield: viewYieldBtn, bins: viewBinsBtn, affidavits: viewAffidavitsBtn, rigs: viewRigsBtn, editlog: viewEditLogBtn };
+    const VIEW_ELS = { loads: loadsTable, field: fieldTable, hauls: haulsTable, contracts: contractsView, settlements: settlementsView, dashboard: dashboardView, harvest: harvestView, yield: yieldView, bins: binsView, affidavits: affidavitsView, rigs: rigsView, editlog: editLogView };
 
     async function ensureContracts() {
       if (!contractsLoaded) { await ensureDestinations(); await ensureHauls(); await fetchContracts(); }
@@ -842,6 +850,7 @@
       if (mode === "hauls" && !haulsLoaded) await fetchHauls();
       if (mode === "harvest") { await ensureHarvestFields(); await ensureYield(); } // the crop of each field comes from the Yield data
       if (mode === "yield") await ensureYield();
+      if (mode === "bins") await fetchBinsPage();
       if (mode === "rigs") await ensureRigs();
       if (mode === "editlog") await fetchEditLog();
       if (mode === "hauls") await ensureAffidavits();
@@ -883,6 +892,7 @@
     viewDashboardBtn.addEventListener("click", () => switchView("dashboard"));
     viewHarvestBtn.addEventListener("click", () => switchView("harvest"));
     viewYieldBtn.addEventListener("click", () => switchView("yield"));
+    viewBinsBtn.addEventListener("click", () => switchView("bins"));
     viewAffidavitsBtn.addEventListener("click", () => switchView("affidavits"));
     viewRigsBtn.addEventListener("click", () => switchView("rigs"));
     viewEditLogBtn.addEventListener("click", () => switchView("editlog"));
@@ -955,6 +965,7 @@
         bin: l.bins?.name || l.bin_id,
         // raw numeric values, kept alongside the display strings above, for
         // the By Field totals/averages
+        ticket_no: l.ticket_number || "",
         bushels_raw: l.bushels,
         weight_lb_raw: l.weight_lb,
         moisture_raw: l.moisture_pct,
@@ -975,7 +986,7 @@
       let rows = allLoads.filter((r) => {
         if (statusFilter && r.status !== statusFilter) return false;
         if (!search) return true;
-        return [r.worker, r.field, r.bin, r.crop].some((v) => (v || "").toLowerCase().includes(search));
+        return [r.worker, r.field, r.bin, r.crop, r.ticket_no].some((v) => (v || "").toLowerCase().includes(search));
       });
 
       if (viewMode === "loads") {
@@ -992,6 +1003,8 @@
         renderHarvest();
       } else if (viewMode === "yield") {
         renderYield();
+      } else if (viewMode === "bins") {
+        renderBinsPage();
       } else if (viewMode === "affidavits") {
         renderAffidavits();
       } else if (viewMode === "rigs") {
@@ -1025,6 +1038,7 @@
           <td>${statusBadge}</td>
           <td>${escapeHtml(r.truck)}</td>
           <td>${escapeHtml(r.load)}</td>
+          <td data-role="load-ticket">${escapeHtml(r.ticket_no || "")}</td>
           <td>${escapeHtml(r.moisture)}</td>
           <td>${escapeHtml(r.test_weight)}</td>
           <td>${escapeHtml(r.bin)}</td>
@@ -2802,6 +2816,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           { key: "weight_lb", label: "Weight (lb, estimated)", type: "number", min: 0 },
           { key: "moisture_pct", label: "Moisture %", type: "number", min: 0, max: 100 },
           { key: "test_weight", label: "Test weight", type: "number", min: 0, max: 100 },
+          { key: "ticket_number", label: "Scale ticket # (optional)", type: "text" },
           { key: "is_buffer", label: "Buffer truck", type: "bool" },
         ],
       };
@@ -3089,6 +3104,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           { key: "weight_lb", label: "Weight (lb, estimated)", type: "number", min: 0 },
           { key: "moisture_pct", label: "Moisture %", type: "number", min: 0, max: 100 },
           { key: "test_weight", label: "Test weight", type: "number", min: 0, max: 100 },
+          { key: "ticket_number", label: "Scale ticket # (optional)", type: "text" },
           { key: "is_buffer", label: "Buffer truck (counts as conventional)", type: "bool" },
         ],
         validate: (v) => {
@@ -3167,6 +3183,11 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         const notes = planNotes(v);
         if (notes.length && !window.confirm(notes.join("\n\n") + "\n\nEnter this load anyway?")) return;
         const day = (iso) => new Date(iso).toDateString();
+        const tno = v.ticket_number ? String(v.ticket_number).trim() : "";
+        if (tno) {
+          const same = allLoads.find((x) => x.raw && x.raw.ticket_number && normalizeTicketNumber(x.raw.ticket_number) === normalizeTicketNumber(tno));
+          if (same && !window.confirm(`Scale ticket ${tno} is already on a load (${same.field || "field"} → ${same.bin || "bin"}). Enter this one again anyway?`)) return;
+        }
         const dup = allLoads.find((x) => x.field_id === v.field_id && x.raw.bin_id === v.bin_id && day(x.logged_at) === day(v.logged_at)
           && ((v.bushels != null && x.bushels_raw === v.bushels) || (v.bushels == null && v.weight_lb != null && x.weight_lb_raw === v.weight_lb)));
         if (dup && !window.confirm("A load with the same field, bin, day and amount is already on file. Enter this one again anyway?")) return;
@@ -3174,6 +3195,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           client_id: crypto.randomUUID(), logged_at: v.logged_at, worker_id: v.worker_id, field_id: v.field_id, crop: v.crop,
           truck: v.truck, truck_mode: v.is_buffer ? "buffer" : v.truck_mode, bushels: v.bushels, weight_lb: v.weight_lb,
           moisture_pct: v.moisture_pct, test_weight: v.test_weight, bin_id: v.bin_id, is_buffer: !!v.is_buffer,
+          ...(tno ? { ticket_number: tno } : {}),
         };
         save.disabled = true;
         const { error } = await supabase.rpc("owner_create_load", { p_load: row });
@@ -3186,7 +3208,14 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         }
         m.close();
         await fetchLoads();
-        statusLine.textContent = `Saved ✓ — load added to ${binRows.find((b) => b.id === v.bin_id)?.name || "the bin"}`;
+        statusLine.textContent = `Saved ✓ — load added to ${binRows.find((b) => b.id === v.bin_id)?.name || "the bin"}${tno ? ` (ticket ${tno})` : ""}`;
+        // an older database quietly leaves the ticket number out: say so rather than let it look saved
+        const kept = allLoads.find((x) => String(x.loadId) === row.client_id);
+        if (tno && kept && !(kept.raw && kept.raw.ticket_number)) {
+          statusLine.textContent = `Saved ✓ — load added, but the ticket number was NOT kept. Run allow-owner-import-tickets.sql in the Supabase SQL Editor, then edit the load to add ticket ${tno}.`;
+          statusLine.style.color = "var(--danger)";
+          setTimeout(() => { statusLine.style.color = ""; }, 15000);
+        }
       });
     }
     loadsAddBtnEl.addEventListener("click", addLoad);
@@ -4416,7 +4445,126 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
     // ---- the edit log tab ----
     let editLogRows = [];
     let editLogUnavailable = false;
-    const EDIT_TABLE_NAMES = { loads: "Field-to-bin load", shipments: "Haul", shipment_tickets: "Scale ticket", contracts: "Contract", contract_tickets: "Contract allocation", settlements: "Settlement", settlement_tickets: "Settlement load", truck_affidavits: "Truck affidavit" };
+
+    // =====================================================================
+    // Bins page: change what each bin is — its status (organic / transitional /
+    // conventional) and its planned crop. Saved through allow-owner-edit-bins.sql
+    // (needs the 2FA code, and every change goes in the Edit log).
+    // =====================================================================
+    let binsPageRows = [];
+    let binsPageContents = [];
+    let binsPageErr = null;
+    let binsPageSearch = "";
+    async function fetchBinsPage() {
+      statusLine.textContent = "Loading…";
+      const [b, lv, ct] = await Promise.all([
+        supabase.from("bins").select("*"),
+        supabase.from("bin_levels").select("*"),
+        supabase.from("bin_contents").select("*"),
+      ]);
+      binsPageErr = b.error ? b.error.message : null;
+      const bu = new Map((lv.data || []).map((x) => [x.id, Number(x.bushels_in_bin) || 0]));
+      binsPageRows = (b.data || []).map((x) => ({ ...x, holds: bu.get(x.id) ?? null }))
+        .sort((p, q) => (p.active === false) - (q.active === false) || String(p.site || "").localeCompare(String(q.site || "")) || String(p.name || "").localeCompare(String(q.name || ""), undefined, { numeric: true }));
+      binsPageContents = ct.error ? [] : ct.data || [];
+      statusLine.textContent = `${binsPageRows.length} bin${binsPageRows.length === 1 ? "" : "s"}`;
+      if (viewMode === "bins") renderBinsPage();
+    }
+
+    function renderBinsPage() {
+      const root = document.getElementById("bins-content");
+      root.innerHTML = "";
+      if (binsPageErr) { root.innerHTML = `<div class="item-card" data-role="bins-error">Couldn't load the bins: ${escapeHtml(binsPageErr)}</div>`; return; }
+      const bar = document.createElement("div");
+      bar.style.cssText = "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px;";
+      const search = document.createElement("input");
+      search.type = "search"; search.placeholder = "Find a bin or site…"; search.value = binsPageSearch;
+      search.setAttribute("data-role", "bins-search");
+      const note = document.createElement("span");
+      note.className = "meta";
+      note.textContent = "Pick a new status or crop and it saves. This changes what the bin is set up as (it drives the organic-bin warnings when grain is loaded or moved); it does not change the grain already in the bin.";
+      bar.append(search, note);
+      root.appendChild(bar);
+      const wrap = document.createElement("div"); wrap.style.overflowX = "auto";
+      const table = document.createElement("table");
+      table.innerHTML = `<thead><tr><th style="cursor:default;">Site</th><th style="cursor:default;">Bin</th><th style="cursor:default;">Type</th><th style="cursor:default;">Holds now</th><th style="cursor:default;">Crop</th><th style="cursor:default;">Status</th><th style="cursor:default;"></th></tr></thead>`;
+      const tbody = document.createElement("tbody");
+      table.appendChild(tbody); wrap.appendChild(table); root.appendChild(wrap);
+      const normC = (c) => (c === "Beans" ? "Soybeans" : c);
+      const cap = (t) => t[0].toUpperCase() + t.slice(1);
+
+      function buildRow(b) {
+        const tr = document.createElement("tr");
+        tr.setAttribute("data-role", "bin-row"); tr.setAttribute("data-bin", String(b.id));
+        if (b.active === false) tr.style.opacity = "0.6";
+        const td = (html) => { const c = document.createElement("td"); if (html != null) c.innerHTML = html; tr.appendChild(c); return c; };
+        td(escapeHtml(b.site || "—"));
+        td(escapeHtml(b.name || String(b.id)) + (b.active === false ? ` <span class="meta">(inactive)</span>` : ""));
+        td(escapeHtml(b.bin_type || "—"));
+        td(b.holds != null ? `${Math.round(b.holds).toLocaleString()} bu` : "—");
+        const cropTd = td(), statusTd = td(), msgTd = td();
+        msgTd.className = "meta"; msgTd.setAttribute("data-role", "bin-msg");
+        const mkSel = (role, current, list, blank) => {
+          const sel = document.createElement("select"); sel.setAttribute("data-role", role);
+          const vals = list.map((o) => o.value);
+          sel.innerHTML = `<option value="">${blank}</option>` + list.map((o) => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</option>`).join("") + (current && !vals.includes(current) ? `<option value="${escapeHtml(current)}">${escapeHtml(current)}</option>` : "");
+          sel.value = current || "";
+          return sel;
+        };
+        const cropSel = mkSel("bin-crop", b.crop, CROP_OPTS, "— none —");
+        const statusSel = mkSel("bin-status", b.status, STATUS_OPTS, "— none —");
+        cropTd.appendChild(cropSel); statusTd.appendChild(statusSel);
+        const say = (t, bad) => { msgTd.textContent = t; msgTd.style.color = bad ? "var(--danger)" : ""; };
+        // what the bin holds now, for the "are you sure" question
+        const lines = () => binsPageContents.filter((c) => String(c.bin_id) === String(b.id) && Number(c.bushels) > 0.005);
+        const sumBu = (ls) => Math.round(ls.reduce((a, c) => a + Number(c.bushels), 0)).toLocaleString();
+        async function change(col, sel) {
+          const was = b[col] || "";
+          const value = sel.value;
+          if (value === was) return;
+          say("");
+          const ls = lines();
+          let ask = "";
+          if (col === "status" && value) {
+            const off = ls.filter((c) => c.field_status && c.field_status !== value);
+            if (off.length) ask = `${b.name} holds ${sumBu(off)} bu of grain recorded as ${[...new Set(off.map((c) => c.field_status))].join("/")}. Set the bin to ${value} anyway? (The grain keeps its own recorded status.)`;
+          }
+          if (col === "crop" && value) {
+            const off = ls.filter((c) => c.crop && normC(c.crop) !== value);
+            if (off.length) ask = `${b.name} holds ${sumBu(off)} bu of ${[...new Set(off.map((c) => normC(c.crop)))].join("/")}. Set the bin's crop to ${value} anyway? (The grain already in it is unchanged.)`;
+          }
+          if (ask && !window.confirm(ask)) { sel.value = was; return; }
+          if (!(await ensureEditSession())) { sel.value = was; say("Not saved — confirm your authenticator code first.", true); return; }
+          say("Saving…");
+          const { data, error } = await supabase.from("bins").update({ [col]: value || null }).eq("id", b.id).select();
+          if (error || !data || data.length === 0) {
+            sel.value = was;
+            say("NOT saved — " + (error ? (/Two-step sign-in required/i.test(error.message) ? "your sign-in hasn't confirmed its authenticator code. Confirm it and try again." : error.message) : "the database didn't accept the change. Run allow-owner-edit-bins.sql in the Supabase SQL Editor, then reload this page."), true);
+            return;
+          }
+          b[col] = data[0][col] || null;
+          say(`Saved ✓ — ${col === "status" ? "status" : "crop"} is now ${b[col] ? (col === "status" ? cap(b[col]) : b[col]) : "none"}`);
+        }
+        cropSel.addEventListener("change", () => change("crop", cropSel));
+        statusSel.addEventListener("change", () => change("status", statusSel));
+        return tr;
+      }
+      const rows = new Map();
+      function paintRows() {
+        const q = binsPageSearch.trim().toLowerCase();
+        tbody.innerHTML = "";
+        binsPageRows.forEach((b) => {
+          if (q && !`${b.site || ""} ${b.name || ""}`.toLowerCase().includes(q)) return;
+          if (!rows.has(b.id)) rows.set(b.id, buildRow(b));
+          tbody.appendChild(rows.get(b.id));
+        });
+        if (!tbody.firstChild) { const tr = document.createElement("tr"); tr.innerHTML = `<td colspan="7" class="meta">${q ? "No bin matches that." : "No bins on file."}</td>`; tbody.appendChild(tr); }
+      }
+      search.addEventListener("input", () => { binsPageSearch = search.value; paintRows(); });
+      paintRows();
+    }
+
+    const EDIT_TABLE_NAMES = { loads: "Field-to-bin load", shipments: "Haul", shipment_tickets: "Scale ticket", contracts: "Contract", contract_tickets: "Contract allocation", settlements: "Settlement", settlement_tickets: "Settlement load", truck_affidavits: "Truck affidavit", bins: "Bin" };
     async function fetchEditLog() {
       const { data, error } = await supabase.from("data_edit_log").select("*").order("edited_at", { ascending: false }).limit(300);
       if (error) { editLogUnavailable = true; editLogRows = []; return; }
