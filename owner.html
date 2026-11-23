@@ -936,13 +936,23 @@
       });
     });
 
+    // Supabase hands back at most 1000 rows per request, so a plain .limit(1500) quietly stops at 1000.
+    // This asks page by page until there is nothing more, so no load, haul or ticket drops off the end.
+    async function fetchAllRows(build, pageSize = 1000) {
+      const out = [];
+      for (let from = 0; ; from += pageSize) {
+        const { data, error } = await build().range(from, from + pageSize - 1);
+        if (error) return { data: null, error };
+        out.push(...(data || []));
+        if (!data || data.length < pageSize) return { data: out, error: null };
+      }
+    }
     async function fetchLoads() {
       statusLine.textContent = "Loading…";
-      const { data, error } = await supabase
+      const { data, error } = await fetchAllRows(() => supabase
         .from("loads")
         .select("*, fields(name, crop, status), bins(name), workers(name)")
-        .order("logged_at", { ascending: false })
-        .limit(1000);
+        .order("logged_at", { ascending: false }));
       if (error) {
         statusLine.textContent = "Error loading: " + error.message;
         return;
@@ -1126,9 +1136,9 @@
     async function fetchHauls() {
       statusLine.textContent = "Loading…";
       const [shipRes, tkRes, readRes] = await Promise.all([
-        supabase.from("shipments").select("*, bins(name), fields(name), destinations(name, location), workers(name)").order("departed_at", { ascending: false }).limit(500),
-        supabase.from("shipment_tickets").select("*").order("created_at", { ascending: false }).limit(1000),
-        supabase.from("ticket_reads").select("*").order("read_at", { ascending: false }).limit(1000),
+        fetchAllRows(() => supabase.from("shipments").select("*, bins(name), fields(name), destinations(name, location), workers(name)").order("departed_at", { ascending: false })),
+        fetchAllRows(() => supabase.from("shipment_tickets").select("*").order("created_at", { ascending: false })),
+        fetchAllRows(() => supabase.from("ticket_reads").select("*").order("read_at", { ascending: false })),
       ]);
       if (shipRes.error) { statusLine.textContent = "Error loading: " + shipRes.error.message; return; }
 
@@ -2261,7 +2271,7 @@
 
     async function fetchAffidavits() {
       const [aRes, fRes, bRes] = await Promise.all([
-        supabase.from("truck_affidavits_verified").select("*").order("signed_at", { ascending: false }).limit(3000),
+        fetchAllRows(() => supabase.from("truck_affidavits_verified").select("*").order("signed_at", { ascending: false })),
         supabase.from("fields").select("id,name"),
         supabase.from("bins").select("id,name"),
       ]);
@@ -3101,6 +3111,8 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
           selectDef("truck", "Trailer", [...TRAILER_OPTS, opt("External", "External trailer")], { allowEmpty: true }),
           selectDef("truck_mode", "Load type", [opt("full", "Full load"), opt("notFull", "Not a full load"), opt("buffer", "Buffer truck")], { allowEmpty: true }),
           { key: "bushels", label: "Bushels", type: "number", min: 0 },
+          { key: "gross_lb", label: "Gross lb (optional)", type: "number", min: 0 },
+          { key: "tare_lb", label: "Tare lb (optional)", type: "number", min: 0 },
           { key: "weight_lb", label: "Weight (lb, estimated)", type: "number", min: 0 },
           { key: "moisture_pct", label: "Moisture %", type: "number", min: 0, max: 100 },
           { key: "test_weight", label: "Test weight", type: "number", min: 0, max: 100 },
@@ -3109,6 +3121,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         ],
         validate: (v) => {
           const errs = [];
+          if (v.gross_lb != null && v.tare_lb != null && !(v.gross_lb > v.tare_lb)) errs.push("Gross lb has to be more than tare lb.");
           if (!(v.bushels > 0) && !(v.weight_lb > 0)) errs.push("Enter the bushels or the weight — more than zero — so the bin level can count this load.");
           return errs;
         },
@@ -3160,6 +3173,26 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
         refreshNote();
       });
       ["bin_id", "crop", "is_buffer"].forEach((k) => inputs[k].addEventListener("change", refreshNote));
+      // gross and tare fill in the weight (gross − tare). Typing the weight yourself afterwards is fine; it is only
+      // recalculated when gross or tare is changed again. Gross and tare are not stored — the weight is what the load keeps.
+      const calcWeight = () => {
+        const g = numOrNull(inputs.gross_lb.value), t = numOrNull(inputs.tare_lb.value);
+        if (g != null && t != null && g > t) { inputs.weight_lb.value = String(Math.round((g - t) * 100) / 100); calcBushels(); }
+      };
+      // bushels = weight ÷ 56 (corn) / 60 (soybeans) / 32 (oats). Only fills the bushels box when it is empty or still
+      // holds the last number calculated here, so bushels you typed yourself are never overwritten.
+      let autoBu = null;
+      const calcBushels = () => {
+        const lb = numOrNull(inputs.weight_lb.value), per = TRANSFER_STD_LB[inputs.crop.value];
+        if (lb == null || !(lb > 0) || !per) return;
+        if (inputs.bushels.value !== "" && inputs.bushels.value !== autoBu) return;
+        autoBu = String(Math.round((lb / per) * 100) / 100);
+        inputs.bushels.value = autoBu;
+      };
+      inputs.gross_lb.addEventListener("input", calcWeight);
+      inputs.tare_lb.addEventListener("input", calcWeight);
+      inputs.weight_lb.addEventListener("input", calcBushels);
+      inputs.crop.addEventListener("change", calcBushels);
 
       const msg = document.createElement("div");
       msg.setAttribute("data-role", "add-load-message");
