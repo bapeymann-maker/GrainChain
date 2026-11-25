@@ -1395,8 +1395,17 @@
     // How many bushels of a haul are still unallocated to any contract —
     // its ticket's full net bushels, minus whatever's already been given
     // out across every contract's assignments (not just this one).
+    // A share-crop load leaves the field/bin whole, but the elevator pays the partner their % directly, so only OUR
+    // part (100 − the partner's %) can go against our contracts. Loads with no partner are their whole ticket.
+    function ourBushels(h) {
+      const total = (h && h._ticket && h._ticket.net_bushels) || 0;
+      const pct = h && h.splitPartnerId != null ? Number(h.splitPct) : NaN;
+      if (!(pct > 0 && pct <= 100)) return total;
+      return Math.round(total * (100 - pct)) / 100;
+    }
+    const ticketWord = (h) => (ourBushels(h) !== ((h && h._ticket && h._ticket.net_bushels) || 0) ? `(our ${100 - Number(h.splitPct)}% of the ${fmtBuExact(h._ticket.net_bushels)} ticket)` : "ticket");
     function haulRemainingBushels(h) {
-      const total = (h._ticket && h._ticket.net_bushels) || 0;
+      const total = ourBushels(h);
       const allocated = allContracts.reduce(
         (sum, c) => sum + c.assignments.filter((a) => a.shipmentClientId === h.haulId).reduce((s, a) => s + a.bushels, 0),
         0
@@ -1415,7 +1424,7 @@
       return [c.contract_number ? `#${c.contract_number}` : null, c.crop, sale, c.delivery_period].filter(Boolean).join(" · ") || "Contract";
     }
     function haulSplit(h) {
-      const total = (h._ticket && h._ticket.net_bushels) || 0;
+      const total = ourBushels(h);
       const parts = [];
       allContracts.forEach((c) => c.assignments.filter((a) => a.shipmentClientId === h.haulId).forEach((a) => parts.push({ contract: c, bushels: a.bushels })));
       parts.sort((x, y) => String(x.contract.contract_date || "").localeCompare(String(y.contract.contract_date || "")) || contractShortLabel(x.contract).localeCompare(contractShortLabel(y.contract), undefined, { numeric: true }));
@@ -1439,8 +1448,8 @@
       title.className = "meta";
       title.style.marginBottom = "4px";
       title.textContent = s.parts.length >= 2
-        ? `Split across ${s.parts.length} contracts — ${fmtBuExact(s.total)} ticket`
-        : `Only part of this load is on a contract — ${fmtBuExact(s.total)} ticket`;
+        ? `Split across ${s.parts.length} contracts — ${fmtBuExact(s.total)} ${ticketWord(h)}`
+        : `Only part of this load is on a contract — ${fmtBuExact(s.total)} ${ticketWord(h)}`;
       box.appendChild(title);
       // On the Settlements tab each part also says which settlement it's on (or that none yet).
       const settlementNote = (contractId) => {
@@ -1474,7 +1483,9 @@
     // ---- Loads and their parts, on settlements ----
     // How many bushels an assignment puts on its settlement: the part, if it's a
     // part of a load, otherwise the whole ticket.
-    const assignmentBushels = (a, h) => (a.bushels != null ? a.bushels : (h && h._ticket && h._ticket.net_bushels) || 0);
+    // A whole-load row on a settlement counts our share of a share-crop load (the elevator paid the partner directly) —
+    // unless it was marked "paid the whole load", when the settlement really does cover the full ticket.
+    const assignmentBushels = (a, h) => (a.bushels != null ? a.bushels : a.elevatorPaidShareOnly === false ? (h && h._ticket && h._ticket.net_bushels) || 0 : ourBushels(h));
     const settlementRowsForHaul = (haulId) =>
       allSettlements.flatMap((s) => s.assignments.filter((a) => a.shipmentClientId === haulId).map((a) => ({ settlement: s, assignment: a })));
     // Which settlement a contract's part of a load is on (contractId null = the part not on any contract).
@@ -1508,7 +1519,7 @@
       return units;
     }
     function unitLabel(u, h) {
-      if (u.kind === "whole") return `Whole load — ${fmtBuExact((h._ticket && h._ticket.net_bushels) || 0)} on this one settlement`;
+      if (u.kind === "whole") return `Whole load — ${fmtBuExact(ourBushels(h))}${ourBushels(h) !== ((h._ticket && h._ticket.net_bushels) || 0) ? " (our share)" : ""} on this one settlement`;
       return `${fmtBuExact(u.bushels)} — ${u.contractId != null && u.contract ? contractShortLabel(u.contract) : "not on a contract"}`;
     }
 
@@ -1964,7 +1975,7 @@
               const partOwner = a.contractId != null ? allContracts.find((x) => x.id === a.contractId) : null;
               const rowText = a.bushels != null
                 ? `${haulSummary(h)} — ${fmtBuExact(a.bushels)} of this ${fmtBuExact((h && h._ticket && h._ticket.net_bushels) || 0)} ticket · ${partOwner ? contractShortLabel(partOwner) : "not on a contract"}`
-                : haulSummary(h);
+                : haulSummary(h) + (h && Math.abs(assignmentBushels(a, h) - ((h._ticket && h._ticket.net_bushels) || 0)) > 0.001 ? ` — on this settlement: ${fmtBuExact(assignmentBushels(a, h))} (our ${100 - Number(h.splitPct)}%)` : "");
               const row = pickRow(rowText, "Remove", () => unassignFromSettlement(a.id));
               // ticket-pick-row is a horizontal flex row (label + button) —
               // wrap it with the share-crop decision in an outer container
@@ -5733,7 +5744,7 @@ ${a.condition === "inspected_cleaned" ? `<h2>Cleaning method (all that apply)</h
       let estimatedAmount = 0, unpricedBushels = 0, unpricedCount = 0;
       const haulsInPeriod = allHauls.filter((h) => h.checkStatus !== "none" && inPeriod(h.departed_at, bounds));
       haulsInPeriod.forEach((h) => {
-        const totalBu = (h._ticket && h._ticket.net_bushels) || 0;
+        const totalBu = ourBushels(h);
         let pricedBu = 0;
         (allocationsByHaul.get(h.haulId) || []).forEach((a) => {
           const price = contractPriceById.get(a.contractId);
