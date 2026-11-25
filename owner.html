@@ -1336,6 +1336,12 @@
 
     // "#1372793 · 10/3/2026 · External Driver · Van De Riet Quarter (field) · 68,980 lb / 1,149.667 bu"
     // The date is the day the load left (the haul's departed time).
+    // a share-crop load says how much of it is ours (the partner's % is paid to them by the elevator)
+    function shareNote(h) {
+      if (!h || !h._ticket) return "";
+      const total = h._ticket.net_bushels || 0, ours = ourBushels(h);
+      return Math.abs(ours - total) > 0.001 ? ` — our ${100 - Number(h.splitPct)}%: ${fmtBuExact(ours)}` : "";
+    }
     function haulSummary(h) {
       if (!h) return "(load not found)";
       const date = h.departed_at ? new Date(h.departed_at).toLocaleDateString() : null;
@@ -2153,7 +2159,7 @@
               const matched = isOnSettlement(h);
               if (units.length === 1 && units[0].kind === "whole") {
                 // an ordinary load: assigned whole, exactly as always
-                detail.appendChild(pickRow(haulSummary(h), "Assign", () => assignToSettlement(h.haulId, s.id, units[0]), "gold", matched));
+                detail.appendChild(pickRow(haulSummary(h) + shareNote(h), "Assign", () => assignToSettlement(h.haulId, s.id, units[0]), "gold", matched));
                 return;
               }
               // a split load: one line for each part still to be settled, plus the whole load
@@ -2161,7 +2167,7 @@
               wrapRow.setAttribute("data-role", "split-load-offer");
               const title = document.createElement("div");
               title.style.cssText = `font-size:13px;margin:6px 0 2px;${matched ? "color:var(--gold);font-weight:600;" : ""}`;
-              title.textContent = `${matched ? "✓ " : ""}${haulSummary(h)}`;
+              title.textContent = `${matched ? "✓ " : ""}${haulSummary(h)}${shareNote(h)}`;
               wrapRow.appendChild(title);
               wrapRow.appendChild(buildSplitBlock(h, { settlementContext: { currentSettlementId: s.id } }));
               units.forEach((u) => wrapRow.appendChild(pickRow(unitLabel(u, h), "Assign", () => assignToSettlement(h.haulId, s.id, u), "gold", matched)));
